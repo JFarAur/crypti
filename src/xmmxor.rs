@@ -114,7 +114,10 @@ pub fn try_decrypt_xor(opts: &AnalysisOpts, instructions: &[Instruction]) -> Has
                 };
                 let scale = instruction.memory_index_scale() as usize;
                 let total_offset = index_val * scale + displacement;
-                let memory_size = instruction.memory_size().size();
+
+                // TODO: This scheme of storing values (using u128) means that 256-bit and 512-bit
+                // registers and operations can't be supported.
+                let memory_size = instruction.memory_size().size().min(16);
 
                 let mut arr: [u8; 16] = [0; 16];
                 let result_count = vecmem.mem_read( reg_as_str(&mut formatter, reg_base), total_offset as i64, &mut arr[0..memory_size]);
