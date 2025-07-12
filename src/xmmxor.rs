@@ -88,6 +88,13 @@ pub fn try_decrypt_xor(opts: &AnalysisOpts, instructions: &[Instruction]) -> Has
     for instruction in instructions {
         /* Determine source operand */
         let src = match instruction.op1_kind() {
+            OpKind::Immediate8 => Some((instruction.immediate16() as u128, 1)),
+            OpKind::Immediate8_2nd => Some((instruction.immediate8_2nd() as u128, 1)),
+            OpKind::Immediate8to16 => Some((instruction.immediate8to16() as u128, 2)),
+            OpKind::Immediate8to32 => Some((instruction.immediate8to32() as u128, 4)),
+            OpKind::Immediate8to64 => Some((instruction.immediate8to64() as u128, 8)),
+            OpKind::Immediate16 => Some((instruction.immediate16() as u128, 2)),
+            OpKind::Immediate32 => Some((instruction.immediate32() as u128, 4)),
             OpKind::Immediate32to64 => Some((instruction.immediate32to64() as u128, 8)),
             OpKind::Immediate64 => Some((instruction.immediate64() as u128, 8)),
             OpKind::Register => {
