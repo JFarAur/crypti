@@ -37,7 +37,7 @@ impl Value {
     }
 
     /// Get this value reinterpreted as a value of `size` bytes, but zero-extended to a u64.
-    /// `size` must be 8 or more bytes.
+    /// `size` must be 8 or fewer bytes.
     pub fn as_zex_u64(&self, size: usize) -> u64
     {
         assert!(
