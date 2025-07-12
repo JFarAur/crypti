@@ -1,0 +1,3 @@
+v0.1.1
+- Improved the heuristic for detecting UTF-16 strings. UTF-16 strings are detected with much better accuracy.
+- Added support for more immediate value types. Previously only imm32, imm64, and imm32/64 were emulated, now all types are emulated.
