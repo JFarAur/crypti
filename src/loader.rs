@@ -1,6 +1,6 @@
 use std::{fs};
 use goblin::pe::{section_table, PE};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 pub struct Segment {
     pub virtual_start: u64,     // base address of the segment (absolute virtual)
@@ -49,7 +49,8 @@ pub struct Binary {
     pub filebuf: Vec<u8>,
     pub code_segs: Vec<Segment>,
     pub bitness: u32,
-    pub entry_point: u64
+    pub entry_point: u64,
+    pub runtime_funcs: Vec<u64>,
 }
 
 impl Binary {
@@ -57,6 +58,20 @@ impl Binary {
     pub fn containing_segment<'a>(&'a self, virt: u64) -> Option<&'a Segment> {
         self.code_segs.iter().find(|&seg| seg.has_virt_addr(virt))
     }
+}
+
+#[allow(dead_code)]
+fn get_runtime_functions(pe: &PE) -> Result<Vec<u64>> {
+    let dir = pe.exception_data.as_ref().ok_or(anyhow!("No exception directory found for binary"))?;
+
+    let functions = dir.functions().map_while(|func_entry| {
+        match func_entry {
+            Ok(entry) => Some(entry.begin_address as u64 + pe.image_base),
+            Err(_) => None
+        }
+    }).collect();
+    
+    Ok(functions)
 }
 
 pub fn load_pe_file(file_path: &str) -> Result<Binary> {
@@ -67,6 +82,7 @@ pub fn load_pe_file(file_path: &str) -> Result<Binary> {
         code_segs: Vec::new(),
         bitness: 0,
         entry_point: 0,
+        runtime_funcs: Vec::new(),
     };
 
     println!("Parsing PE.");
@@ -98,6 +114,12 @@ pub fn load_pe_file(file_path: &str) -> Result<Binary> {
 
             pebin.code_segs.push(code_seg);
         }
+    }
+
+    let mut runtime_funcs = get_runtime_functions(&pe);
+    match &mut runtime_funcs {
+        Ok(funcs) => pebin.runtime_funcs.append(funcs),
+        Err(err) => println!("Warning: {}", err)
     }
 
     Ok(pebin)
