@@ -4,8 +4,6 @@ use anyhow::Result;
 
 use crate::analysis::{Analysis, AnalysisOpts, AnalysisResult, AnalysisResultType, AnalysisSet};
 use crate::cfg::CFGAnalysisResult;
-use crate::log::LogLevel;
-use crate::log_println;
 use crate::mem::{SimMemory, VecMemory};
 use crate::loader::{Binary};
 use crate::registers::{get_reg_val, set_reg_val};
@@ -13,6 +11,33 @@ use crate::registers::{get_reg_val, set_reg_val};
 fn reg_as_str(formatter: &mut dyn Formatter,
                     reg: Register) -> &str {
     formatter.format_register(reg)
+}
+
+/// Check if a byte slice is likely a UTF-16 string.
+/// Heuristics for a "likely UTF-16" string are:
+/// - nonzero length
+/// - any adjacent chars of the form \x00??, where ??
+///   is any nonzero byte
+fn likely_utf16(data: &[u8]) -> bool {
+    let mut end = data.len();
+    for i in (0..data.len() - 1).step_by(2) {
+        if data[i] == 0x00 && data[i + 1] == 0x00 {
+            end = i;
+            break;
+        }
+    }
+
+    if end == 0 {
+        return false;
+    }
+
+    for i in (0..end - 1).step_by(4) {
+        if data[i] != 0x00 && data[i + 1] == 0x00 && data[i + 2] != 0x00 && data[i + 3] == 0x00 {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn u8_to_u16_le(input: &[u8]) -> Vec<u16> {
@@ -77,7 +102,7 @@ impl AnalysisResult for XorAnalysisResult {
 
 pub struct XorAnalysis {}
 
-pub fn try_decrypt_xor(opts: &AnalysisOpts, instructions: &[Instruction]) -> HashMap<u64, DecodedString> {
+pub fn try_decrypt_xor(_opts: &AnalysisOpts, instructions: &[Instruction]) -> HashMap<u64, DecodedString> {
     let mut formatter = IntelFormatter::new();
 
     let mut regmap: HashMap<String, u128> = HashMap::new();
@@ -199,29 +224,26 @@ pub fn try_decrypt_xor(opts: &AnalysisOpts, instructions: &[Instruction]) -> Has
                                 let result = result_val.to_le_bytes();
                                 let is_zero = result[..src_size].iter().all(|x| *x == 0);
 
-                                // We will try to interpret the string first as UTF-8.
-                                // If there is not a sensible decoding as UTF-8 then we will try as UTF-16.
+                                // We will try to interpret the string first as UTF-16.
+                                // If there is not a sensible decoding as UTF-16 then we will try as UTF-8.
                                 // We will consider a "sensible decoding" to be one in which 
                                 // the string has nonzero length after escaping special characters.
                                 // This will filter out most non-results, such as strings
                                 // which just consist of a single carriage return, etc.
 
-                                if !is_zero && let Ok(as_c_string) = c_string_from_u8(&result) {
+                                if likely_utf16(&result) && let Ok(as_unicode) = unicode_string_from_u8(&result) {
+                                    let unicode = as_unicode.escape_default().to_string();
+                                    
+                                    decrypted_strings.insert(instruction.ip(), DecodedString {
+                                        encoding_size: 2, text: unicode
+                                    });
+                                } else if !is_zero && let Ok(as_c_string) = c_string_from_u8(&result) {
                                     let c_string = as_c_string.escape_default().to_string();
 
                                     if c_string.len() > 0 {
                                         decrypted_strings.insert(instruction.ip(), DecodedString {
                                             encoding_size: 1, text: c_string
                                         });
-                                    } else if let Ok(as_unicode) = unicode_string_from_u8(&result) {
-                                        let unicode = as_unicode.escape_default().to_string();
-                                        if unicode.len() > 0 {
-                                            decrypted_strings.insert(instruction.ip(), DecodedString {
-                                                encoding_size: 2, text: unicode
-                                            });
-                                        } else {
-                                            log_println!(opts.log_level, LogLevel::Debug, "No sensible decoding for xor result at {:X}", instruction.ip());
-                                        }
                                     }
                                 }
                             }
