@@ -6,7 +6,7 @@ use crate::analysis::{Analysis, AnalysisOpts, AnalysisResult, AnalysisResultType
 use crate::cfg::CFGAnalysisResult;
 use crate::mem::{SimMemory, VecMemory};
 use crate::loader::{Binary};
-use crate::registers::{get_reg_val, set_reg_val};
+use crate::registers::{Value, get_reg_val, set_reg_val};
 
 fn reg_as_str(formatter: &mut dyn Formatter,
                     reg: Register) -> &str {
@@ -100,155 +100,222 @@ impl AnalysisResult for XorAnalysisResult {
     }
 }
 
+fn load_operand(
+    formatter: &mut dyn Formatter,
+    regmap: &HashMap<String, Value>,
+    vecmem: &VecMemory,
+    instruction: &Instruction,
+    op: u32) -> Option<(Value, usize)>
+{
+    match instruction.op_kind(op) {
+        OpKind::Immediate8 => Some((Value::from_bytes(&instruction.immediate8().to_le_bytes()), 1)),
+        OpKind::Immediate8_2nd => Some((Value::from_bytes(&instruction.immediate8_2nd().to_le_bytes()), 1)),
+        OpKind::Immediate8to16 => Some((Value::from_bytes(&instruction.immediate8to16().to_le_bytes()), 2)),
+        OpKind::Immediate8to32 => Some((Value::from_bytes(&instruction.immediate8to32().to_le_bytes()), 4)),
+        OpKind::Immediate8to64 => Some((Value::from_bytes(&instruction.immediate8to64().to_le_bytes()), 8)),
+        OpKind::Immediate16 => Some((Value::from_bytes(&instruction.immediate16().to_le_bytes()), 2)),
+        OpKind::Immediate32 => Some((Value::from_bytes(&instruction.immediate32().to_le_bytes()), 4)),
+        OpKind::Immediate32to64 => Some((Value::from_bytes(&instruction.immediate32to64().to_le_bytes()), 8)),
+        OpKind::Immediate64 => Some((Value::from_bytes(&instruction.immediate64().to_le_bytes()), 8)),
+        OpKind::Register => {
+            let reg_str = reg_as_str(formatter, instruction.op_register(op));
+            let reg_val = get_reg_val( &regmap, reg_str);
+            match reg_val {
+                Some(val) => Some((val, instruction.op_register(op).size())),
+                None => None
+            }
+        },
+        OpKind::Memory => {
+            let reg_base = instruction.memory_base();
+            let displacement = instruction.memory_displacement64() as usize;
+            let reg_index = instruction.memory_index();
+            let index_val = match reg_index {
+                Register::None => Value::zero(),
+                reg => {
+                    let reg_str = reg_as_str(formatter, reg);
+                    match get_reg_val(&regmap, reg_str) {
+                        Some(reg_val) => reg_val,
+                        None => Value::zero(), // TODO: 0 is not a good guess, value is legitimately unknown
+                    }
+                }
+            };
+            let reg_index_size = reg_index.size();
+            let scale = instruction.memory_index_scale() as usize;
+
+            let total_offset = (index_val.as_zex_u64(reg_index_size) as usize) * scale + displacement;
+            let memory_size = instruction.memory_size().size().min(64);
+
+            let mut arr: [u8; 64] = [0; 64];
+            let result_count = vecmem.mem_read( reg_as_str(formatter, reg_base), total_offset as i64, &mut arr[0..memory_size]);
+            
+            if result_count == memory_size {
+                Some((Value::from_bytes(&arr), memory_size))
+            } else {
+                None
+            }
+        },
+        _ => None
+    }
+}
+
+fn store_operand(
+    formatter: &mut dyn Formatter,
+    regmap: &mut HashMap<String, Value>,
+    vecmem: &mut VecMemory,
+    instruction: &Instruction,
+    op: u32,
+    value: &Value,
+    size: usize
+    )
+{
+    match instruction.op_kind(op) {
+        OpKind::Register => {
+            let reg_str = reg_as_str(formatter, instruction.op_register(op));
+            set_reg_val(regmap, reg_str, value, size);
+        },
+        OpKind::Memory => {
+            let reg_base = instruction.memory_base();
+            let displacement = instruction.memory_displacement64() as usize;
+            let reg_index = instruction.memory_index();
+            let index_val = match reg_index {
+                Register::None => Value::zero(),
+                reg => {
+                    let reg_str = reg_as_str(formatter, reg);
+                    match get_reg_val(regmap, reg_str) {
+                        Some(reg_val) => reg_val,
+                        None => Value::zero(), // TODO: if we don't have a value for the index register then not actually possible to go forward
+                    }
+                }
+            };
+            let reg_index_size = reg_index.size();
+            let scale = instruction.memory_index_scale() as usize;
+            let total_offset = (index_val.as_zex_u64(reg_index_size) as usize) * scale + displacement;
+            let memory_size = instruction.memory_size().size();
+
+            vecmem.mem_write( reg_as_str(formatter, reg_base), total_offset as i64, &value.data[0..memory_size]);
+        },
+        _ => ()
+    };
+}
+
+fn xor_values(val1: &Value, val2: &Value) -> Value {
+    let data = val1.data
+        .iter()
+        .zip(val2.data.iter())
+        .map(|(a, b)| a ^ b)
+        .collect::<Vec<u8>>()
+        .try_into()
+        .unwrap();
+
+    Value {
+        data: data
+    }
+}
+
+fn log_xor_result(decrypted_strings: &mut HashMap<u64, DecodedString>, result: &[u8], size: usize, instruction: &Instruction) {
+    // We will try to interpret the string first as UTF-16.
+    // If there is not a sensible decoding as UTF-16 then we will try as UTF-8.
+    // We will consider a "sensible decoding" to be one in which 
+    // the string has nonzero length after escaping special characters.
+    // This will filter out most non-results, such as strings
+    // which just consist of a single carriage return, etc.
+    let is_zero = result[..size].iter().all(|x| *x == 0);
+
+    if likely_utf16(result) && let Ok(as_unicode) = unicode_string_from_u8(result) {
+        let unicode = as_unicode.escape_default().to_string();
+        
+        decrypted_strings.insert(instruction.ip(), DecodedString {
+            encoding_size: 2, text: unicode
+        });
+    } else if !is_zero && let Ok(as_c_string) = c_string_from_u8(result) {
+        let c_string = as_c_string.escape_default().to_string();
+
+        if c_string.len() > 0 {
+            decrypted_strings.insert(instruction.ip(), DecodedString {
+                encoding_size: 1, text: c_string
+            });
+        }
+    }
+}
+
 pub struct XorAnalysis {}
 
 pub fn try_decrypt_xor(_opts: &AnalysisOpts, instructions: &[Instruction]) -> HashMap<u64, DecodedString> {
     let mut formatter = IntelFormatter::new();
 
-    let mut regmap: HashMap<String, u128> = HashMap::new();
+    let mut regmap: HashMap<String, Value> = HashMap::new();
     let mut vecmem: VecMemory = VecMemory::new();
 
     let mut decrypted_strings: HashMap<u64, DecodedString> = HashMap::new();
 
     for instruction in instructions {
-        /* Determine source operand */
-        let src = match instruction.op1_kind() {
-            OpKind::Immediate8 => Some((instruction.immediate8() as u128, 1)),
-            OpKind::Immediate8_2nd => Some((instruction.immediate8_2nd() as u128, 1)),
-            OpKind::Immediate8to16 => Some((instruction.immediate8to16() as u128, 2)),
-            OpKind::Immediate8to32 => Some((instruction.immediate8to32() as u128, 4)),
-            OpKind::Immediate8to64 => Some((instruction.immediate8to64() as u128, 8)),
-            OpKind::Immediate16 => Some((instruction.immediate16() as u128, 2)),
-            OpKind::Immediate32 => Some((instruction.immediate32() as u128, 4)),
-            OpKind::Immediate32to64 => Some((instruction.immediate32to64() as u128, 8)),
-            OpKind::Immediate64 => Some((instruction.immediate64() as u128, 8)),
-            OpKind::Register => {
-                let op1_str = reg_as_str(&mut formatter, instruction.op1_register());
-                let reg_val = get_reg_val( &mut regmap, op1_str);
-                match reg_val {
-                    Some(val) => Some((val, instruction.op1_register().size())),
-                    None => None
-                }
-            },
-            OpKind::Memory => {
-                let reg_base = instruction.memory_base();
-                let displacement = instruction.memory_displacement64() as usize;
-                let reg_index = instruction.memory_index();
-                let index_val = match reg_index {
-                    Register::None => 0,
-                    reg => {
-                        let reg_str = reg_as_str(&mut formatter, reg);
-                        match get_reg_val(&mut regmap, reg_str) {
-                            Some(reg_val) => reg_val as usize,
-                            None => 0, // TODO: 0 is not a good guess, value is legitimately unknown
-                        }
-                    }
-                };
-                let scale = instruction.memory_index_scale() as usize;
-                let total_offset = index_val * scale + displacement;
-
-                // TODO: This scheme of storing values (using u128) means that 256-bit and 512-bit
-                // registers and operations can't be supported.
-                let memory_size = instruction.memory_size().size().min(16);
-
-                let mut arr: [u8; 16] = [0; 16];
-                let result_count = vecmem.mem_read( reg_as_str(&mut formatter, reg_base), total_offset as i64, &mut arr[0..memory_size]);
-                
-                if result_count == memory_size {
-                    Some((u128::from_le_bytes(arr), memory_size))
-                } else {
-                    None
-                }
-            },
-            _ => None
-        };
-
         match instruction.mnemonic() {
             Mnemonic::Mov
             | Mnemonic::Movups
             | Mnemonic::Movaps
-            | Mnemonic::Movss
-            | Mnemonic::Movsd
             | Mnemonic::Movdqa
             | Mnemonic::Movdqu
             | Mnemonic::Movapd
-            | Mnemonic::Movupd => {
-                /* Only if we got some value based on the source operand */
-                if let Some((src_val, src_size)) = src {
-                    /* Act depending on destination operand */
-                    match instruction.op0_kind() {
-                        OpKind::Register => {
-                            let op0_str = reg_as_str(&mut formatter, instruction.op0_register());
-                            set_reg_val(&mut regmap, op0_str, src_val, src_size);
-                        },
-                        OpKind::Memory => {
-                            let reg_base = instruction.memory_base();
-                            let displacement = instruction.memory_displacement64() as usize;
-                            let reg_index = instruction.memory_index();
-                            let index_val = match reg_index {
-                                Register::None => 0,
-                                reg => {
-                                    let reg_str = reg_as_str(&mut formatter, reg);
-                                    match get_reg_val(&mut regmap, reg_str) {
-                                        Some(reg_val) => reg_val as usize,
-                                        None => 0, // TODO: if we don't have a value for the index register then not actually possible to go forward
-                                    }
-                                }
-                            };
-                            let scale = instruction.memory_index_scale() as usize;
-                            let total_offset = index_val * scale + displacement;
-                            let memory_size = instruction.memory_size().size();
+            | Mnemonic::Movupd
+            | Mnemonic::Vmovups
+            | Mnemonic::Vmovupd
+            | Mnemonic::Vmovdqa
+            | Mnemonic::Vmovdqu
+            | Mnemonic::Vmovaps
+            | Mnemonic::Vmovapd => {
+                /* Determine source operand */
+                let src = load_operand(&mut formatter, &regmap, &vecmem, instruction, 1);
 
-                            vecmem.mem_write( reg_as_str(&mut formatter, reg_base), total_offset as i64, &src_val.to_le_bytes()[0..memory_size]);
-                        },
-                        _ => ()
-                    };
+                /* Only if we got some value based on the source operand */
+                if let Some((src_val, src_size)) = &src {
+                    /* Act depending on destination operand */
+                    store_operand(&mut formatter, &mut regmap, &mut vecmem, instruction, 0, src_val, *src_size);
                 }
             },
             Mnemonic::Xorps
             | Mnemonic::Xorpd
             | Mnemonic::Xor => {
+                /* Determine source operand */
+                let src = load_operand(&mut formatter, &regmap, &vecmem, instruction, 1);
+
                 if instruction.op0_register() == instruction.op1_register() {
 
                 } else if let Some((src_val, src_size)) = src {
                     // pretty sure only option is register in op0
-                    match instruction.op0_kind() {
-                        OpKind::Register => {
-                            let op0_str = reg_as_str(&mut formatter, instruction.op0_register());
+                    if instruction.op0_kind() == OpKind::Register {
+                        let op0_str = reg_as_str(&mut formatter, instruction.op0_register());
 
-                            if let Some(reg_val) = get_reg_val(&mut regmap, op0_str) {
-                                let result_val = src_val ^ reg_val;
+                        if let Some(dest_val) = get_reg_val(&mut regmap, op0_str) {
+                            let result_val = xor_values(&dest_val, &src_val);
+                            set_reg_val(&mut regmap, op0_str, &result_val, src_size);
+                            
+                            let result = &result_val.data;
+                            log_xor_result(&mut decrypted_strings, result, src_size, &instruction);
+                        }
+                    }
+                }
+            },
+            Mnemonic::Vxorps
+            | Mnemonic::Vxorpd
+            | Mnemonic::Vpxor
+            | Mnemonic::Vpxord
+            | Mnemonic::Vpxorq => {
+                /* Determine source operands */
+                let src1 = load_operand(&mut formatter, &regmap, &vecmem, instruction, 1);
+                let src2 = load_operand(&mut formatter, &regmap, &vecmem, instruction, 2);
 
-                                set_reg_val(&mut regmap, op0_str, result_val, src_size);
-                                
-                                let result = result_val.to_le_bytes();
-                                let is_zero = result[..src_size].iter().all(|x| *x == 0);
+                if instruction.op0_register() == instruction.op1_register() && instruction.op1_register() == instruction.op2_register() {
 
-                                // We will try to interpret the string first as UTF-16.
-                                // If there is not a sensible decoding as UTF-16 then we will try as UTF-8.
-                                // We will consider a "sensible decoding" to be one in which 
-                                // the string has nonzero length after escaping special characters.
-                                // This will filter out most non-results, such as strings
-                                // which just consist of a single carriage return, etc.
+                } else if let Some((src1_val, src1_size)) = src1 && let Some((src2_val, _src2_size)) = src2 {
+                    // pretty sure only option is register in op0
+                    if instruction.op0_kind() == OpKind::Register {
+                        let result_val = xor_values(&src1_val, &src2_val);
 
-                                if likely_utf16(&result) && let Ok(as_unicode) = unicode_string_from_u8(&result) {
-                                    let unicode = as_unicode.escape_default().to_string();
-                                    
-                                    decrypted_strings.insert(instruction.ip(), DecodedString {
-                                        encoding_size: 2, text: unicode
-                                    });
-                                } else if !is_zero && let Ok(as_c_string) = c_string_from_u8(&result) {
-                                    let c_string = as_c_string.escape_default().to_string();
-
-                                    if c_string.len() > 0 {
-                                        decrypted_strings.insert(instruction.ip(), DecodedString {
-                                            encoding_size: 1, text: c_string
-                                        });
-                                    }
-                                }
-                            }
-                        },
-                        _ => ()
+                        let op0_str = reg_as_str(&mut formatter, instruction.op0_register());
+                        set_reg_val(&mut regmap, op0_str, &result_val, src1_size);
+                        
+                        let result = &result_val.data;
+                        log_xor_result(&mut decrypted_strings, result, src1_size, instruction);
                     }
                 }
             }
