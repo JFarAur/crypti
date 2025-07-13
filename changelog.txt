@@ -1,3 +1,6 @@
+v0.1.3
+- Greatly improved function detection on x64 using function data from the exception directory.
+
 v0.1.2
 - Added support for 256-bit and 512-bit vector instructions (vmovdqa, vmovdqu, vpxor, etc), greatly improving the variety of strings that can be decrypted.
 
