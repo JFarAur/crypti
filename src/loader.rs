@@ -1,4 +1,4 @@
-use std::{fs};
+use std::{collections::HashMap, fs};
 use goblin::pe::{section_table, PE};
 use anyhow::{anyhow, Result};
 
@@ -50,7 +50,7 @@ pub struct Binary {
     pub code_segs: Vec<Segment>,
     pub bitness: u32,
     pub entry_point: u64,
-    pub runtime_funcs: Vec<u64>,
+    pub canonical_ends: HashMap<u64, u64>,
 }
 
 impl Binary {
@@ -60,18 +60,17 @@ impl Binary {
     }
 }
 
-#[allow(dead_code)]
-fn get_runtime_functions(pe: &PE) -> Result<Vec<u64>> {
+fn get_runtime_functions(pe: &PE) -> Result<HashMap<u64, u64>> {
     let dir = pe.exception_data.as_ref().ok_or(anyhow!("No exception directory found for binary"))?;
 
-    let functions = dir.functions().map_while(|func_entry| {
+    let runtime_funcs: HashMap<u64, u64> = dir.functions().map_while(|func_entry| {
         match func_entry {
-            Ok(entry) => Some(entry.begin_address as u64 + pe.image_base),
+            Ok(entry) => Some((entry.begin_address as u64 + pe.image_base, entry.end_address as u64 + pe.image_base)),
             Err(_) => None
         }
     }).collect();
     
-    Ok(functions)
+    Ok(runtime_funcs)
 }
 
 pub fn load_pe_file(file_path: &str) -> Result<Binary> {
@@ -82,7 +81,7 @@ pub fn load_pe_file(file_path: &str) -> Result<Binary> {
         code_segs: Vec::new(),
         bitness: 0,
         entry_point: 0,
-        runtime_funcs: Vec::new(),
+        canonical_ends: HashMap::new(),
     };
 
     println!("Parsing PE.");
@@ -116,9 +115,9 @@ pub fn load_pe_file(file_path: &str) -> Result<Binary> {
         }
     }
 
-    let mut runtime_funcs = get_runtime_functions(&pe);
-    match &mut runtime_funcs {
-        Ok(funcs) => pebin.runtime_funcs.append(funcs),
+    let runtime_funcs = get_runtime_functions(&pe);
+    match runtime_funcs {
+        Ok(funcs) => pebin.canonical_ends.extend(funcs),
         Err(err) => println!("Warning: {}", err)
     }
 
