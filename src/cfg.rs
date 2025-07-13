@@ -88,6 +88,7 @@ impl Analysis for CFGAnalysis {
 
         // Entry point should be a call destination.
         call_destinations_set.insert(binary.entry_point);
+        call_destinations_set.extend(binary.canonical_ends.keys());
 
         let mut instruction = Instruction::default();
 
@@ -258,6 +259,7 @@ impl Analysis for CFGAnalysis {
             match virt_to_idx.get(&call_dest_virt) {
                 Some(&idx) => {
                     let func_start = call_dest_virt;
+                    let canonical_end = binary.canonical_ends.get(&call_dest_virt).copied();
                     let mut func_end: Option<u64> = None;
                     let mut block_start = call_dest_virt;
                     let mut block: Vec<Instruction> = Vec::new();
@@ -273,9 +275,10 @@ impl Analysis for CFGAnalysis {
 
                     for i in idx..last_idx {
                         instruction = instructions[i];
-                        block.push(instruction);
 
-                        if instruction.mnemonic() == Mnemonic::Int3 {
+                        // If there is a canonical function end, then we will break there
+                        // instead of continuing past.
+                        if let Some(end) = canonical_end && instruction.ip() >= end {
                             if block.len() > 0 {
                                 basic_blocks.insert(block_start, BasicBlock {
                                     virtual_start: block_start,
@@ -284,9 +287,23 @@ impl Analysis for CFGAnalysis {
                                 });
                             }
                             
-                            func_end = Some(instruction.next_ip());
+                            func_end = Some(end);
 
                             break;
+                        }
+
+                        block.push(instruction);
+
+                        if instruction.mnemonic() == Mnemonic::Int3 {
+                            basic_blocks.insert(block_start, BasicBlock {
+                                virtual_start: block_start,
+                                instructions: block,
+                                targets: Vec::new()
+                            });
+
+                            block = Vec::new();
+                            
+                            func_end = Some(instruction.next_ip());
                         } else if instruction.mnemonic() == Mnemonic::Ret ||
                             instruction.is_jmp_short_or_near() ||
                             instruction.is_jmp_near_indirect() {
@@ -353,7 +370,7 @@ impl Analysis for CFGAnalysis {
 
                     // now, if we successfully resolved the end of the function,
                     // and the function has at least one basic block, add it.
-                    if let Some(func_end_virt) = func_end {
+                    if let Some(func_end_virt) = func_end.or(canonical_end) {
                         if basic_blocks.len() > 0 {
                             function_blocks.insert(func_start, FunctionBlock {
                                 virtual_start: func_start,
