@@ -12,7 +12,9 @@ type MaybeValue = Option<(Value, usize)>;
 
 fn reg_as_str(formatter: &mut dyn Formatter,
                     reg: Register) -> &str {
-    formatter.format_register(reg)
+    // Get the full register, this way AL maps to the
+    // same register as EAX, RAX, etc.
+    formatter.format_register(reg.full_register())
 }
 
 #[allow(dead_code)]
