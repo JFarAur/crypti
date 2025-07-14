@@ -1,17 +1,11 @@
 use std::collections::{HashMap};
-use iced_x86::{Formatter, Instruction, IntelFormatter, Mnemonic, OpKind, Register};
+use iced_x86::{Instruction, Mnemonic};
 use anyhow::Result;
 
 use crate::analysis::{Analysis, AnalysisOpts, AnalysisResult, AnalysisResultType, AnalysisSet};
-use crate::cfg::CFGAnalysisResult;
-use crate::mem::{SimMemory, VecMemory};
+use crate::cfg::{BasicBlock, CFGAnalysisResult};
+use crate::emulator::{Emulator, ResultInfo, ReasonResult, EmulatorResult, EmulatorStopReason, InstructionClass};
 use crate::loader::{Binary};
-use crate::registers::{Value, get_reg_val, set_reg_val};
-
-fn reg_as_str(formatter: &mut dyn Formatter,
-                    reg: Register) -> &str {
-    formatter.format_register(reg)
-}
 
 /// Check if a byte slice is likely a UTF-16 string.
 /// Heuristics for a "likely UTF-16" string are:
@@ -100,118 +94,6 @@ impl AnalysisResult for XorAnalysisResult {
     }
 }
 
-fn load_operand(
-    formatter: &mut dyn Formatter,
-    regmap: &HashMap<String, Value>,
-    vecmem: &VecMemory,
-    instruction: &Instruction,
-    op: u32) -> Option<(Value, usize)>
-{
-    match instruction.op_kind(op) {
-        OpKind::Immediate8 => Some((Value::from_bytes(&instruction.immediate8().to_le_bytes()), 1)),
-        OpKind::Immediate8_2nd => Some((Value::from_bytes(&instruction.immediate8_2nd().to_le_bytes()), 1)),
-        OpKind::Immediate8to16 => Some((Value::from_bytes(&instruction.immediate8to16().to_le_bytes()), 2)),
-        OpKind::Immediate8to32 => Some((Value::from_bytes(&instruction.immediate8to32().to_le_bytes()), 4)),
-        OpKind::Immediate8to64 => Some((Value::from_bytes(&instruction.immediate8to64().to_le_bytes()), 8)),
-        OpKind::Immediate16 => Some((Value::from_bytes(&instruction.immediate16().to_le_bytes()), 2)),
-        OpKind::Immediate32 => Some((Value::from_bytes(&instruction.immediate32().to_le_bytes()), 4)),
-        OpKind::Immediate32to64 => Some((Value::from_bytes(&instruction.immediate32to64().to_le_bytes()), 8)),
-        OpKind::Immediate64 => Some((Value::from_bytes(&instruction.immediate64().to_le_bytes()), 8)),
-        OpKind::Register => {
-            let reg_str = reg_as_str(formatter, instruction.op_register(op));
-            let reg_val = get_reg_val( &regmap, reg_str);
-            match reg_val {
-                Some(val) => Some((val, instruction.op_register(op).size())),
-                None => None
-            }
-        },
-        OpKind::Memory => {
-            let reg_base = instruction.memory_base();
-            let displacement = instruction.memory_displacement64() as usize;
-            let reg_index = instruction.memory_index();
-            let index_val = match reg_index {
-                Register::None => Value::zero(),
-                reg => {
-                    let reg_str = reg_as_str(formatter, reg);
-                    match get_reg_val(&regmap, reg_str) {
-                        Some(reg_val) => reg_val,
-                        None => Value::zero(), // TODO: 0 is not a good guess, value is legitimately unknown
-                    }
-                }
-            };
-            let reg_index_size = reg_index.size();
-            let scale = instruction.memory_index_scale() as usize;
-
-            let total_offset = (index_val.as_zex_u64(reg_index_size) as usize) * scale + displacement;
-            let memory_size = instruction.memory_size().size().min(64);
-
-            let mut arr: [u8; 64] = [0; 64];
-            let result_count = vecmem.mem_read( reg_as_str(formatter, reg_base), total_offset as i64, &mut arr[0..memory_size]);
-            
-            if result_count == memory_size {
-                Some((Value::from_bytes(&arr), memory_size))
-            } else {
-                None
-            }
-        },
-        _ => None
-    }
-}
-
-fn store_operand(
-    formatter: &mut dyn Formatter,
-    regmap: &mut HashMap<String, Value>,
-    vecmem: &mut VecMemory,
-    instruction: &Instruction,
-    op: u32,
-    value: &Value,
-    size: usize
-    )
-{
-    match instruction.op_kind(op) {
-        OpKind::Register => {
-            let reg_str = reg_as_str(formatter, instruction.op_register(op));
-            set_reg_val(regmap, reg_str, value, size);
-        },
-        OpKind::Memory => {
-            let reg_base = instruction.memory_base();
-            let displacement = instruction.memory_displacement64() as usize;
-            let reg_index = instruction.memory_index();
-            let index_val = match reg_index {
-                Register::None => Value::zero(),
-                reg => {
-                    let reg_str = reg_as_str(formatter, reg);
-                    match get_reg_val(regmap, reg_str) {
-                        Some(reg_val) => reg_val,
-                        None => Value::zero(), // TODO: if we don't have a value for the index register then not actually possible to go forward
-                    }
-                }
-            };
-            let reg_index_size = reg_index.size();
-            let scale = instruction.memory_index_scale() as usize;
-            let total_offset = (index_val.as_zex_u64(reg_index_size) as usize) * scale + displacement;
-            let memory_size = instruction.memory_size().size();
-
-            vecmem.mem_write( reg_as_str(formatter, reg_base), total_offset as i64, &value.data[0..memory_size]);
-        },
-        _ => ()
-    };
-}
-
-fn xor_values(val1: &Value, val2: &Value) -> Value {
-    let data = val1.data
-        .iter()
-        .zip(val2.data.iter())
-        .map(|(a, b)| a ^ b)
-        .collect::<Vec<u8>>()
-        .try_into()
-        .unwrap();
-
-    Value {
-        data: data
-    }
-}
-
 fn log_xor_result(decrypted_strings: &mut HashMap<u64, DecodedString>, result: &[u8], size: usize, instruction: &Instruction) {
     // We will try to interpret the string first as UTF-16.
     // If there is not a sensible decoding as UTF-16 then we will try as UTF-8.
@@ -240,90 +122,52 @@ fn log_xor_result(decrypted_strings: &mut HashMap<u64, DecodedString>, result: &
 
 pub struct XorAnalysis {}
 
-pub fn try_decrypt_xor(_opts: &AnalysisOpts, instructions: &[Instruction]) -> HashMap<u64, DecodedString> {
-    let mut formatter = IntelFormatter::new();
-
-    let mut regmap: HashMap<String, Value> = HashMap::new();
-    let mut vecmem: VecMemory = VecMemory::new();
-
+pub fn try_decrypt_xor(_opts: &AnalysisOpts, basic_block: &BasicBlock) -> HashMap<u64, DecodedString> {
+    let mut emu: Emulator = Emulator::new();
     let mut decrypted_strings: HashMap<u64, DecodedString> = HashMap::new();
+    let mut idx: usize = 0;
 
-    for instruction in instructions {
+    loop {
+        let instructions: &[Instruction] = &basic_block.instructions[idx..basic_block.instructions.len()];
+
+        let EmulatorResult{ 
+            info: ResultInfo{ instructions_emulated },
+            reason: reason_result
+        } = emu.emulate_until(instructions, EmulatorStopReason::PostInstruction(InstructionClass::XorOrVectorXor));
+
+        if let ReasonResult::InstructionResult(xor_result) = reason_result {
+            if let (instruction, Some((xor_data, xor_size))) = &xor_result {
+                if xor_data.data[0] != 0 {
+                    log_xor_result(&mut decrypted_strings, &xor_data.data, *xor_size, instruction);
+                }
+            }
+        } else if let ReasonResult::OutOfInstructions = reason_result {
+            break;
+        }
+
+        idx += instructions_emulated;
+    }
+
+
+    decrypted_strings
+}
+
+fn block_contains_xor(basic_block: &BasicBlock) -> bool {
+    let is_xor = |instruction: &Instruction| {
         match instruction.mnemonic() {
-            Mnemonic::Mov
-            | Mnemonic::Movups
-            | Mnemonic::Movaps
-            | Mnemonic::Movdqa
-            | Mnemonic::Movdqu
-            | Mnemonic::Movapd
-            | Mnemonic::Movupd
-            | Mnemonic::Vmovups
-            | Mnemonic::Vmovupd
-            | Mnemonic::Vmovdqa
-            | Mnemonic::Vmovdqu
-            | Mnemonic::Vmovaps
-            | Mnemonic::Vmovapd => {
-                /* Determine source operand */
-                let src = load_operand(&mut formatter, &regmap, &vecmem, instruction, 1);
-
-                /* Only if we got some value based on the source operand */
-                if let Some((src_val, src_size)) = &src {
-                    /* Act depending on destination operand */
-                    store_operand(&mut formatter, &mut regmap, &mut vecmem, instruction, 0, src_val, *src_size);
-                }
-            },
-            Mnemonic::Xorps
+            Mnemonic::Xor
+            | Mnemonic::Xorps
             | Mnemonic::Xorpd
-            | Mnemonic::Xor => {
-                /* Determine source operand */
-                let src = load_operand(&mut formatter, &regmap, &vecmem, instruction, 1);
-
-                if instruction.op0_register() == instruction.op1_register() {
-
-                } else if let Some((src_val, src_size)) = src {
-                    // pretty sure only option is register in op0
-                    if instruction.op0_kind() == OpKind::Register {
-                        let op0_str = reg_as_str(&mut formatter, instruction.op0_register());
-
-                        if let Some(dest_val) = get_reg_val(&mut regmap, op0_str) {
-                            let result_val = xor_values(&dest_val, &src_val);
-                            set_reg_val(&mut regmap, op0_str, &result_val, src_size);
-                            
-                            let result = &result_val.data;
-                            log_xor_result(&mut decrypted_strings, result, src_size, &instruction);
-                        }
-                    }
-                }
-            },
-            Mnemonic::Vxorps
+            | Mnemonic::Vxorps
             | Mnemonic::Vxorpd
             | Mnemonic::Vpxor
             | Mnemonic::Vpxord
-            | Mnemonic::Vpxorq => {
-                /* Determine source operands */
-                let src1 = load_operand(&mut formatter, &regmap, &vecmem, instruction, 1);
-                let src2 = load_operand(&mut formatter, &regmap, &vecmem, instruction, 2);
+            | Mnemonic::Vpxorq => true,
+            _ => false
+        }
+    };
 
-                if instruction.op0_register() == instruction.op1_register() && instruction.op1_register() == instruction.op2_register() {
-
-                } else if let Some((src1_val, src1_size)) = src1 && let Some((src2_val, _src2_size)) = src2 {
-                    // pretty sure only option is register in op0
-                    if instruction.op0_kind() == OpKind::Register {
-                        let result_val = xor_values(&src1_val, &src2_val);
-
-                        let op0_str = reg_as_str(&mut formatter, instruction.op0_register());
-                        set_reg_val(&mut regmap, op0_str, &result_val, src1_size);
-                        
-                        let result = &result_val.data;
-                        log_xor_result(&mut decrypted_strings, result, src1_size, instruction);
-                    }
-                }
-            }
-            _ => ()
-        };
-    }
-
-    decrypted_strings
+    basic_block.instructions.iter().find(|&instruction| is_xor(instruction)).is_some()
 }
 
 impl Analysis for XorAnalysis {
@@ -335,7 +179,9 @@ impl Analysis for XorAnalysis {
 
         for (&func_start, func_block) in cfg_result.function_blocks.iter() {
             for (&_block_start, basic_block) in &func_block.basic_blocks {
-                let decrypted_strings = try_decrypt_xor(&analyses.opts, &basic_block.instructions);
+                if !block_contains_xor(basic_block) { continue; }
+
+                let decrypted_strings = try_decrypt_xor(&analyses.opts, basic_block);
 
                 if decrypted_strings.len() > 0 {
                     string_map.entry(func_start).or_insert(HashMap::new()).extend(decrypted_strings);
