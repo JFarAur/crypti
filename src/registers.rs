@@ -36,6 +36,21 @@ impl Value {
         from_bytes_mut(&mut self.data[..len])
     }
 
+    /// Get this value reinterpreted as a value of `size` bytes, but zero-extended to a u32.
+    /// `size` must be 4 or fewer bytes.
+    pub fn as_zex_u32(&self, size: usize) -> u32
+    {
+        assert!(
+            size <= 4,
+            "type ({} bytes) does not fit into 4-byte buffer",
+            size,
+        );
+
+        let mut buf = [0u8; 4];
+        buf[..size].copy_from_slice(&self.data[..size]);
+        *from_bytes(&buf)
+    }
+
     /// Get this value reinterpreted as a value of `size` bytes, but zero-extended to a u64.
     /// `size` must be 8 or fewer bytes.
     pub fn as_zex_u64(&self, size: usize) -> u64

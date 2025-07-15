@@ -10,6 +10,8 @@ mod registers;
 mod analysis;
 mod cfg;
 mod emulator;
+mod hashconst;
+mod hashfunc;
 mod xmmxor;
 
 use crate::analysis::{Analysis, AnalysisOpts, AnalysisSet};
@@ -17,6 +19,7 @@ use crate::loader::{load_pe_file};
 use crate::log::LogLevel;
 use crate::cfg::CFGAnalysis;
 use crate::xmmxor::XorAnalysis;
+use crate::hashfunc::HashAnalysis;
 
 const PROGRAM_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -49,6 +52,7 @@ pub fn load_and_analyze(file_path: &str, opts: AnalysisOpts) -> Result<AnalysisS
     };
 
     analyses.results.push(CFGAnalysis{}.analyze(&analyses, &pebin)?);
+    analyses.results.push(HashAnalysis{}.analyze(&analyses, &pebin)?);
     analyses.results.push(XorAnalysis{}.analyze(&analyses, &pebin)?);
 
     Ok(analyses)
