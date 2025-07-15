@@ -1,3 +1,7 @@
+v0.1.4
+- Some code refactoring and optimizations.
+- Improved emulation of registers and values in some specific scenarios.
+
 v0.1.3
 - Greatly improved function detection on x64 using function data from the exception directory.
 
