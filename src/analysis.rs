@@ -8,6 +8,7 @@ use crate::{loader::Binary, log::LogLevel};
 pub enum AnalysisResultType {
     CFG,
     XmmXor,
+    Hash,
 }
 
 pub struct AnalysisOpts {
@@ -20,7 +21,8 @@ impl fmt::Display for AnalysisResultType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", match self {
             AnalysisResultType::CFG => "CFG",
-            AnalysisResultType::XmmXor => "XmmXor"
+            AnalysisResultType::XmmXor => "XmmXor",
+            AnalysisResultType::Hash => "Hash",
         })
     }
 }

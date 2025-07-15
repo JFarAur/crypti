@@ -5,6 +5,7 @@ use anyhow::Result;
 use crate::analysis::{Analysis, AnalysisOpts, AnalysisResult, AnalysisResultType, AnalysisSet};
 use crate::cfg::{BasicBlock, CFGAnalysisResult};
 use crate::emulator::{Emulator, ResultInfo, ReasonResult, EmulatorResult, EmulatorStopReason, InstructionClass};
+use crate::hashfunc::HashAnalysisResult;
 use crate::loader::{Binary};
 
 /// Check if a byte slice is likely a UTF-16 string.
@@ -61,6 +62,7 @@ pub struct DecodedString {
 
 pub struct XorAnalysisResult {
     pub function_xor_strings: HashMap<u64, HashMap<u64, DecodedString>>,
+    pub function_annotations: HashMap<u64, String>,
 }
 
 impl AnalysisResult for XorAnalysisResult {
@@ -73,6 +75,10 @@ impl AnalysisResult for XorAnalysisResult {
         let mut total_string_count = 0;
         for (func_start, strings) in self.function_xor_strings.iter() {
             println!("sub_{:X}", func_start);
+
+            if let Some(func_annotation) = self.function_annotations.get(func_start) {
+                println!("Detections: {}", func_annotation);
+            }
 
             let mut xor_ips: Vec<_> = strings.keys().cloned().collect();
             xor_ips.sort();
@@ -174,8 +180,11 @@ impl Analysis for XorAnalysis {
     fn analyze(&self, analyses: &AnalysisSet, _binary: &Binary) -> Result<Box<dyn AnalysisResult>> {
         let cfg_result = analyses.get_of_type(AnalysisResultType::CFG)?
             .as_type::<CFGAnalysisResult>()?;
+        let hash_result = analyses.get_of_type(AnalysisResultType::Hash)?
+            .as_type::<HashAnalysisResult>()?;
 
         let mut string_map: HashMap<u64, HashMap<u64, DecodedString>> = HashMap::new();
+        let mut function_annotations: HashMap<u64, String> = HashMap::new();
 
         for (&func_start, func_block) in cfg_result.function_blocks.iter() {
             for (&_block_start, basic_block) in &func_block.basic_blocks {
@@ -187,10 +196,16 @@ impl Analysis for XorAnalysis {
                     string_map.entry(func_start).or_insert(HashMap::new()).extend(decrypted_strings);
                 }
             }
+
+            if let Some(hash_algos) = hash_result.function_hash_algos.get(&func_start) {
+                let as_vec: Vec<String> = hash_algos.iter().map(|algo| algo.clone()).collect();
+                function_annotations.entry(func_start).or_insert(as_vec.join(","));
+            }
         }
 
         Ok(Box::from(XorAnalysisResult{
             function_xor_strings: string_map,
+            function_annotations: function_annotations
         }))
     }
 }
