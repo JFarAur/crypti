@@ -71,7 +71,6 @@ impl Emulator {
 
     pub fn load_operand(
         &self,
-        formatter: &mut dyn Formatter,
         instruction: &Instruction,
         op: u32) -> Option<(Value, usize)>
     {
@@ -126,7 +125,6 @@ impl Emulator {
 
     pub fn store_operand(
         &mut self,
-        formatter: &mut dyn Formatter,
         instruction: &Instruction,
         op: u32,
         value: &Value,
@@ -197,7 +195,7 @@ impl Emulator {
                 | Mnemonic::Vmovaps
                 | Mnemonic::Vmovapd => {
                     /* Determine source operand */
-                    let src = self.load_operand(&mut formatter, instruction, 1);
+                    let src = self.load_operand(instruction, 1);
 
                     /* If there is a pre instruction type set and this instruction is not in the ignore list
                      (it was not previously processed by us in the last iteration) then return. */
@@ -214,7 +212,7 @@ impl Emulator {
                     /* Only if we got some value based on the source operand */
                     if let Some((src_val, src_size)) = &src {
                         /* Act depending on destination operand */
-                        self.store_operand(&mut formatter, instruction, 0, src_val, *src_size);
+                        self.store_operand(instruction, 0, src_val, *src_size);
                     }
 
                     /* If there is a post instruction type set, return with the result. */
@@ -229,8 +227,8 @@ impl Emulator {
                 | Mnemonic::Xorpd
                 | Mnemonic::Xor => {
                     /* Determine source operand */
-                    let src = self.load_operand(&mut formatter, instruction, 1);
-                    let dest = self.load_operand(&mut formatter, instruction, 0);
+                    let src = self.load_operand(instruction, 1);
+                    let dest = self.load_operand(instruction, 0);
 
                     if let EmulatorStopReason::PreInstruction(InstructionClass::XorOrVectorXor) = stop_reason {
                         self.ignore_once.insert(instruction.ip());
@@ -254,7 +252,7 @@ impl Emulator {
 
                     match &result {
                         Some((result_val, result_size)) => {
-                            self.store_operand(&mut formatter, instruction, 0, result_val, *result_size);
+                            self.store_operand(instruction, 0, result_val, *result_size);
 
                         },
                         None => (),
@@ -274,9 +272,9 @@ impl Emulator {
                 | Mnemonic::Vpxord
                 | Mnemonic::Vpxorq => {
                     /* Determine source operands */
-                    let src1 = self.load_operand(&mut formatter, instruction, 1);
-                    let src2 = self.load_operand(&mut formatter, instruction, 2);
-                    let dest = self.load_operand(&mut formatter, instruction, 0);
+                    let src1 = self.load_operand(instruction, 1);
+                    let src2 = self.load_operand(instruction, 2);
+                    let dest = self.load_operand(instruction, 0);
 
                     if let EmulatorStopReason::PreInstruction(InstructionClass::XorOrVectorXor) = stop_reason {
                         self.ignore_once.insert(instruction.ip());
@@ -300,7 +298,7 @@ impl Emulator {
 
                     match &result {
                         Some((result_val, result_size)) => {
-                            self.store_operand(&mut formatter, instruction, 0, result_val, *result_size);
+                            self.store_operand(instruction, 0, result_val, *result_size);
 
                         },
                         None => (),
