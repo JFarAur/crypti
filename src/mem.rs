@@ -11,6 +11,7 @@ pub trait SimMemory {
 
     /// Shift all offsets for the submemory of `register`
     /// by `offset`.
+    #[allow(dead_code)]
     fn mem_shift(&mut self, register: u64, offset: i64);
 }
 
