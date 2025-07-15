@@ -33,6 +33,8 @@ pub fn known_hash_u32(hash_value: u32) -> Option<String> {
         | 0x9b05688c
         | 0x1f83d9ab
         | 0x5be0cd19 => Some("SHA256".to_string()),
+        0x811c9dc5
+        | 0x1000193 => Some("FNV/32".to_string()),
         _ => None
     }
 }
@@ -59,6 +61,8 @@ pub fn known_hash_u64(hash_value: u64) -> Option<String> {
         | 0x9b05688c2b3e6c1f
         | 0x1f83d9abfb41bd6b
         | 0x5be0cd19137e2179 => Some("SHA512".to_string()),
+        0xcbf29ce484222325
+        | 0x100000001b3 => Some("FNV/64".to_string()),
         _ => None
     }
 }
