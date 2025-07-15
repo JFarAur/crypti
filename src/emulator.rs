@@ -45,6 +45,10 @@ pub struct Emulator {
     ignore_once: HashSet<u64>,
 }
 
+pub fn get_register_idx(reg: Register) -> u64 {
+    reg.full_register() as u64
+}
+
 impl Emulator {
     pub fn new() -> Emulator {
         Emulator { 
@@ -85,7 +89,7 @@ impl Emulator {
             OpKind::Immediate32to64 => Some((Value::from_bytes(&instruction.immediate32to64().to_le_bytes()), 8)),
             OpKind::Immediate64 => Some((Value::from_bytes(&instruction.immediate64().to_le_bytes()), 8)),
             OpKind::Register => {
-                let reg_val = get_reg_val( &self.regmap, instruction.op_register(op) as u64);
+                let reg_val = get_reg_val( &self.regmap, get_register_idx(instruction.op_register(op)));
                 match reg_val {
                     Some(val) => Some((val, instruction.op_register(op).size())),
                     None => None
@@ -133,7 +137,7 @@ impl Emulator {
     {
         match instruction.op_kind(op) {
             OpKind::Register => {
-                set_reg_val(&mut self.regmap, instruction.op_register(op) as u64, value, size);
+                set_reg_val(&mut self.regmap, get_register_idx(instruction.op_register(op)), value, size);
             },
             OpKind::Memory => {
                 let reg_base = instruction.memory_base();
@@ -371,5 +375,32 @@ mod tests {
 
         // test if mov reg, reg works
         assert_eq!(emu.regmap.get(&R8).unwrap().as_zex_u64(8), 2040);
+    }
+
+    #[test]
+    fn test_emu_move_instruction_same_reg_diff_size_low() {
+        // Test some mov instructions that use the same register,
+        // but different operand sizes (e.g. AL and RAX, should modify the same register).
+        // Only test when the smaller register is the least-significant portion
+        // of the largest register.
+        let mut emu = Emulator::new();
+
+        // mov rax, 0x500000
+        // mov al, 0x20
+        let instructions = vec![
+            Instruction::with2(Code::Mov_r64_imm64, Register::RAX, 0x500000).unwrap(),
+            Instruction::with2(Code::Mov_r8_imm8, Register::AL, 0x20).unwrap(),
+        ];
+
+        const RAX: u64 = Register::RAX as u64;
+
+        let EmulatorResult { info, reason: _reason }
+            = emu.emulate_until(&instructions, EmulatorStopReason::Nothing);
+
+        // all instructions emulated successfully
+        assert_eq!(info.instructions_emulated, 2);
+        
+        // test if emulation was correct
+        assert_eq!(emu.regmap.get(&RAX).unwrap().as_zex_u64(8), 0x500020);
     }
 }
