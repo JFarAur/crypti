@@ -8,6 +8,10 @@ pub trait SimMemory {
     /// Read from emulated memory at [register+offset].
     /// Returns the number of bytes read.
     fn mem_read(&self, register: u64, offset: i64, bytes: &mut [u8]) -> usize;
+
+    /// Shift all offsets for the submemory of `register`
+    /// by `offset`.
+    fn mem_shift(&mut self, register: u64, offset: i64);
 }
 
 struct SubChunk {
@@ -205,6 +209,12 @@ impl SimMemory for VecMemory {
             },
             None => 0
         }
+    }
+
+    fn mem_shift(&mut self, register: u64, offset: i64) {
+        self.memmap.entry(register).and_modify(|submem| {
+            submem.submap.iter_mut().for_each(|chunk| chunk.pos += offset);
+        });
     }
 }
 
@@ -525,5 +535,56 @@ mod tests {
 
         assert_eq!(bytes_read, 6);
         assert_eq!(read_result, vec![0x20, 0x30, 0x40, 0x50, 0x55, 0x66]);
+    }
+
+    #[test]
+    fn test_memory_shift() {
+        let mut vecmem = VecMemory {
+            memmap: HashMap::new()
+        };
+
+        let mut submem1: SubMemory = SubMemory {
+            submap: Vec::new(),
+        };
+
+        submem1.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
+        submem1.submap.push(SubChunk { pos: 0x304, data: vec![0x60, 0x70, 0x80, 0x90] });
+        vecmem.memmap.insert(5, Box::from(submem1));
+
+        let mut submem2: SubMemory = SubMemory {
+            submap: Vec::new(),
+        };
+
+        submem2.submap.push(SubChunk { pos: 0x300, data: vec![0x22, 0x33, 0x44] });
+        vecmem.memmap.insert(7, Box::from(submem2));
+
+        vecmem.mem_shift(5, 6);
+
+        // first array should be at 0x306 now
+        let mut read_result = Vec::from([0u8; 3]);
+        let bytes_read = vecmem.mem_read(5, 0x306, &mut read_result);
+
+        assert_eq!(bytes_read, 3);
+        assert_eq!(read_result, vec![0x20, 0x30, 0x40]);
+
+        // second array at 0x30A now
+        let mut read_result = Vec::from([0u8; 4]);
+        let bytes_read = vecmem.mem_read(5, 0x30A, &mut read_result);
+
+        assert_eq!(bytes_read, 4);
+        assert_eq!(read_result, vec![0x60, 0x70, 0x80, 0x90]);
+
+        // data should not exist at original pos
+        let mut read_result = Vec::from([0u8; 4]);
+        let bytes_read = vecmem.mem_read(5, 0x300, &mut read_result);
+
+        assert_eq!(bytes_read, 0);
+
+        // second register should be unchanged
+        let mut read_result = Vec::from([0u8; 3]);
+        let bytes_read = vecmem.mem_read(7, 0x300, &mut read_result);
+
+        assert_eq!(bytes_read, 3);
+        assert_eq!(read_result, vec![0x22, 0x33, 0x44]);
     }
 }
