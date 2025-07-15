@@ -77,16 +77,16 @@ impl Value {
     }
 }
 
-pub fn get_reg_val(regmap: &HashMap<String, Value>,
-                    reg: &str) -> Option<Value> {
-    regmap.get(reg).copied()
+pub fn get_reg_val(regmap: &HashMap<u64, Value>,
+                    reg: u64) -> Option<Value> {
+    regmap.get(&reg).copied()
 }
 
-pub fn set_reg_val(regmap: &mut HashMap<String, Value>,
-                    reg: &str,
+pub fn set_reg_val(regmap: &mut HashMap<u64, Value>,
+                    reg: u64,
                     val: &Value,
                     size: usize) {
-    let exis: &mut Value = regmap.entry(reg.to_string()).or_insert(Value{ data: [0; 64] });
+    let exis: &mut Value = regmap.entry(reg).or_insert(Value{ data: [0; 64] });
     exis.data[0..size].copy_from_slice(&val.data[0..size]);
 }
 

@@ -10,13 +10,6 @@ use crate::registers::{Value, get_reg_val, set_reg_val};
 /// being read.
 type MaybeValue = Option<(Value, usize)>;
 
-fn reg_as_str(formatter: &mut dyn Formatter,
-                    reg: Register) -> &str {
-    // Get the full register, this way AL maps to the
-    // same register as EAX, RAX, etc.
-    formatter.format_register(reg.full_register())
-}
-
 #[allow(dead_code)]
 pub enum InstructionClass {
     MovOrVectorMov,
@@ -47,7 +40,7 @@ pub struct EmulatorResult {
 }
 
 pub struct Emulator {
-    pub regmap: HashMap<String, Value>,
+    pub regmap: HashMap<u64, Value>,
     pub vecmem: VecMemory,
     ignore_once: HashSet<u64>,
 }
@@ -93,8 +86,7 @@ impl Emulator {
             OpKind::Immediate32to64 => Some((Value::from_bytes(&instruction.immediate32to64().to_le_bytes()), 8)),
             OpKind::Immediate64 => Some((Value::from_bytes(&instruction.immediate64().to_le_bytes()), 8)),
             OpKind::Register => {
-                let reg_str = reg_as_str(formatter, instruction.op_register(op));
-                let reg_val = get_reg_val( &self.regmap, reg_str);
+                let reg_val = get_reg_val( &self.regmap, instruction.op_register(op) as u64);
                 match reg_val {
                     Some(val) => Some((val, instruction.op_register(op).size())),
                     None => None
@@ -107,8 +99,7 @@ impl Emulator {
                 let index_val = match reg_index {
                     Register::None => Value::zero(),
                     reg => {
-                        let reg_str = reg_as_str(formatter, reg);
-                        match get_reg_val(&self.regmap, reg_str) {
+                        match get_reg_val(&self.regmap, reg as u64) {
                             Some(reg_val) => reg_val,
                             None => Value::zero(), // TODO: 0 is not a good guess, value is legitimately unknown
                         }
@@ -121,7 +112,7 @@ impl Emulator {
                 let memory_size = instruction.memory_size().size().min(64);
 
                 let mut arr: [u8; 64] = [0; 64];
-                let result_count = self.vecmem.mem_read( reg_as_str(formatter, reg_base), total_offset as i64, &mut arr[0..memory_size]);
+                let result_count = self.vecmem.mem_read( reg_base as u64, total_offset as i64, &mut arr[0..memory_size]);
                 
                 if result_count == memory_size {
                     Some((Value::from_bytes(&arr), memory_size))
@@ -144,8 +135,7 @@ impl Emulator {
     {
         match instruction.op_kind(op) {
             OpKind::Register => {
-                let reg_str = reg_as_str(formatter, instruction.op_register(op));
-                set_reg_val(&mut self.regmap, reg_str, value, size);
+                set_reg_val(&mut self.regmap, instruction.op_register(op) as u64, value, size);
             },
             OpKind::Memory => {
                 let reg_base = instruction.memory_base();
@@ -154,8 +144,7 @@ impl Emulator {
                 let index_val = match reg_index {
                     Register::None => Value::zero(),
                     reg => {
-                        let reg_str = reg_as_str(formatter, reg);
-                        match get_reg_val(&mut self.regmap, reg_str) {
+                        match get_reg_val(&mut self.regmap, reg as u64) {
                             Some(reg_val) => reg_val,
                             None => Value::zero(), // TODO: if we don't have a value for the index register then not actually possible to go forward
                         }
@@ -166,7 +155,7 @@ impl Emulator {
                 let total_offset = (index_val.as_zex_u64(reg_index_size) as usize) * scale + displacement;
                 let memory_size = instruction.memory_size().size();
 
-                self.vecmem.mem_write( reg_as_str(formatter, reg_base), total_offset as i64, &value.data[0..memory_size]);
+                self.vecmem.mem_write( reg_base as u64, total_offset as i64, &value.data[0..memory_size]);
             },
             _ => ()
         };
@@ -337,12 +326,52 @@ impl Emulator {
 
 #[cfg(test)]
 mod tests {
+    use iced_x86::{Code, MemoryOperand};
+
     use super::*;
 
     #[test]
     fn test_emu_move_instruction() {
-        let emu = Emulator::new();
+        // Test some different mov instructions,
+        // some with immediate operands, some with
+        // register operands, some with memory operands.
+        let mut emu = Emulator::new();
+
+        // mov rax, 0x50
+        // mov rbx, 0xFFFFFF0
+        // mov rcx, 2040
+        // mov qword [rbp+0x60], rcx
+        // mov rdx, qword [rbp+0x60]
+        let instructions = vec![
+            Instruction::with2(Code::Mov_r64_imm64, Register::RAX, 0x50).unwrap(),
+            Instruction::with2(Code::Mov_r64_imm64, Register::RBX, 0xFFFFFF0).unwrap(),
+            Instruction::with2(Code::Mov_r64_imm64, Register::RCX, 2040).unwrap(),
+            Instruction::with2(Code::Mov_r64_rm64, MemoryOperand::with_base_displ(Register::RBP, 0x60), Register::RCX).unwrap(),
+            Instruction::with2(Code::Mov_r64_rm64, Register::RDX, MemoryOperand::with_base_displ(Register::RBP, 0x60)).unwrap(),
+            Instruction::with2(Code::Mov_r64_rm64, Register::R8, Register::RDX).unwrap(),
+        ];
+
+        const RAX: u64 = Register::RAX as u64;
+        const RBX: u64 = Register::RBX as u64;
+        const RBP: u64 = Register::RBP as u64;
+        const R8: u64 = Register::R8 as u64;
+
+        let EmulatorResult { info, reason: _reason }
+            = emu.emulate_until(&instructions, EmulatorStopReason::Nothing);
+
+        // all instructions emulated successfully
+        assert_eq!(info.instructions_emulated, 6);
         
-        
+        // test if mov reg, imm worked
+        assert_eq!(emu.regmap.get(&RAX).unwrap().as_zex_u64(8), 0x50);
+        assert_eq!(emu.regmap.get(&RBX).unwrap().as_zex_u64(8), 0xFFFFFF0);
+
+        // test if mov mem, reg and mov reg, mem work
+        let mut memval = Value::from_bytes(&[0x00u8; 8]);
+        emu.vecmem.mem_read(RBP, 0x60, &mut memval.data[0..8]);
+        assert_eq!(memval.as_zex_u64(8), 2040);
+
+        // test if mov reg, reg works
+        assert_eq!(emu.regmap.get(&R8).unwrap().as_zex_u64(8), 2040);
     }
 }
