@@ -9,6 +9,7 @@ mod mem;
 mod registers;
 mod analysis;
 mod cfg;
+mod emulator;
 mod xmmxor;
 
 use crate::analysis::{Analysis, AnalysisOpts, AnalysisSet};

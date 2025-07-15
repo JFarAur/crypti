@@ -3,11 +3,16 @@ use std::{collections::HashMap};
 pub trait SimMemory {
     /// Write to emulated memory at [register+offset].
     /// Returns the number of bytes written.
-    fn mem_write(&mut self, register: &str, offset: i64, bytes: &[u8]) -> usize;
+    fn mem_write(&mut self, register: u64, offset: i64, bytes: &[u8]) -> usize;
 
     /// Read from emulated memory at [register+offset].
     /// Returns the number of bytes read.
-    fn mem_read(&self, register: &str, offset: i64, bytes: &mut [u8]) -> usize;
+    fn mem_read(&self, register: u64, offset: i64, bytes: &mut [u8]) -> usize;
+
+    /// Shift all offsets for the submemory of `register`
+    /// by `offset`.
+    #[allow(dead_code)]
+    fn mem_shift(&mut self, register: u64, offset: i64);
 }
 
 struct SubChunk {
@@ -20,7 +25,7 @@ struct SubMemory {
 }
 
 pub struct VecMemory {
-    memmap: HashMap<String, Box<SubMemory>>,
+    memmap: HashMap<u64, Box<SubMemory>>,
 }
 
 impl VecMemory {
@@ -178,8 +183,8 @@ fn get_submap_offset_mut<'a>(submem: &'a mut SubMemory, offset: i64, count: usiz
 }
 
 impl SimMemory for VecMemory {
-    fn mem_write(&mut self, register: &str, offset: i64, bytes: &[u8]) -> usize {
-        let submem = self.memmap.entry(register.to_string()).or_insert(
+    fn mem_write(&mut self, register: u64, offset: i64, bytes: &[u8]) -> usize {
+        let submem = self.memmap.entry(register).or_insert(
             Box::from(SubMemory {
                 submap: Vec::new()
             })
@@ -191,8 +196,8 @@ impl SimMemory for VecMemory {
         min_size
     }
 
-    fn mem_read(&self, register: &str, offset: i64, bytes: &mut [u8]) -> usize {
-        match self.memmap.get(register) {
+    fn mem_read(&self, register: u64, offset: i64, bytes: &mut [u8]) -> usize {
+        match self.memmap.get(&register) {
             Some(submem) => {
                 match get_submap_offset(submem, offset, bytes.len()) {
                     Some(src) => {
@@ -205,6 +210,12 @@ impl SimMemory for VecMemory {
             },
             None => 0
         }
+    }
+
+    fn mem_shift(&mut self, register: u64, offset: i64) {
+        self.memmap.entry(register).and_modify(|submem| {
+            submem.submap.iter_mut().for_each(|chunk| chunk.pos += offset);
+        });
     }
 }
 
@@ -341,10 +352,10 @@ mod tests {
         };
 
         submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
-        vecmem.memmap.insert("REG".to_string(), Box::from(submem));
+        vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = Vec::from([0u8; 2]);
-        let bytes_read = vecmem.mem_read("REG", 0x300, &mut bytes);
+        let bytes_read = vecmem.mem_read(5, 0x300, &mut bytes);
 
         assert_eq!(bytes_read, 2);
         assert_eq!(bytes, vec![0x20, 0x30]);
@@ -361,10 +372,10 @@ mod tests {
         };
 
         submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
-        vecmem.memmap.insert("REG".to_string(), Box::from(submem));
+        vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = Vec::from([0u8; 2]);
-        let bytes_read = vecmem.mem_read("REG", 0x301, &mut bytes);
+        let bytes_read = vecmem.mem_read(5, 0x301, &mut bytes);
 
         assert_eq!(bytes_read, 2);
         assert_eq!(bytes, vec![0x30, 0x40]);
@@ -381,10 +392,10 @@ mod tests {
         };
 
         submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
-        vecmem.memmap.insert("REG".to_string(), Box::from(submem));
+        vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = Vec::from([0u8; 2]);
-        let bytes_read = vecmem.mem_read("EBX", 0x300, &mut bytes);
+        let bytes_read = vecmem.mem_read(6, 0x300, &mut bytes);
 
         assert_eq!(bytes_read, 0);
     }
@@ -400,10 +411,10 @@ mod tests {
         };
 
         submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
-        vecmem.memmap.insert("REG".to_string(), Box::from(submem));
+        vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = Vec::from([0u8; 2]);
-        let bytes_read = vecmem.mem_read("REG", 0x400, &mut bytes);
+        let bytes_read = vecmem.mem_read(5, 0x400, &mut bytes);
 
         assert_eq!(bytes_read, 0);
     }
@@ -419,10 +430,10 @@ mod tests {
         };
 
         submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
-        vecmem.memmap.insert("REG".to_string(), Box::from(submem));
+        vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = Vec::from([0u8; 4]);
-        let bytes_read = vecmem.mem_read("REG", 0x300, &mut bytes);
+        let bytes_read = vecmem.mem_read(5, 0x300, &mut bytes);
 
         assert_eq!(bytes_read, 0);
     }
@@ -438,15 +449,15 @@ mod tests {
         };
 
         submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
-        vecmem.memmap.insert("REG".to_string(), Box::from(submem));
+        vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = vec![0x55, 0x66];
-        let bytes_written = vecmem.mem_write("REG", 0x300, &mut bytes);
+        let bytes_written = vecmem.mem_write(5, 0x300, &mut bytes);
 
         assert_eq!(bytes_written, 2);
 
         let mut read_result = Vec::from([0u8; 3]);
-        let bytes_read = vecmem.mem_read("REG", 0x300, &mut read_result);
+        let bytes_read = vecmem.mem_read(5, 0x300, &mut read_result);
 
         assert_eq!(bytes_read, 3);
         assert_eq!(read_result, vec![0x55, 0x66, 0x40]);
@@ -463,15 +474,15 @@ mod tests {
         };
 
         submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40, 0x50, 0x60] });
-        vecmem.memmap.insert("REG".to_string(), Box::from(submem));
+        vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = vec![0x55, 0x66];
-        let bytes_written = vecmem.mem_write("REG", 0x302, &mut bytes);
+        let bytes_written = vecmem.mem_write(5, 0x302, &mut bytes);
 
         assert_eq!(bytes_written, 2);
 
         let mut read_result = Vec::from([0u8; 5]);
-        let bytes_read = vecmem.mem_read("REG", 0x300, &mut read_result);
+        let bytes_read = vecmem.mem_read(5, 0x300, &mut read_result);
 
         assert_eq!(bytes_read, 5);
         assert_eq!(read_result, vec![0x20, 0x30, 0x55, 0x66, 0x60]);
@@ -488,15 +499,15 @@ mod tests {
         };
 
         submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40, 0x50, 0x60] });
-        vecmem.memmap.insert("REG".to_string(), Box::from(submem));
+        vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = vec![0x55, 0x66];
-        let bytes_written = vecmem.mem_write("REG", 0x2FF, &mut bytes);
+        let bytes_written = vecmem.mem_write(5, 0x2FF, &mut bytes);
 
         assert_eq!(bytes_written, 2);
 
         let mut read_result = Vec::from([0u8; 6]);
-        let bytes_read = vecmem.mem_read("REG", 0x2FF, &mut read_result);
+        let bytes_read = vecmem.mem_read(5, 0x2FF, &mut read_result);
 
         assert_eq!(bytes_read, 6);
         assert_eq!(read_result, vec![0x55, 0x66, 0x30, 0x40, 0x50, 0x60]);
@@ -513,17 +524,68 @@ mod tests {
         };
 
         submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40, 0x50, 0x60] });
-        vecmem.memmap.insert("REG".to_string(), Box::from(submem));
+        vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = vec![0x55, 0x66];
-        let bytes_written = vecmem.mem_write("REG", 0x304, &mut bytes);
+        let bytes_written = vecmem.mem_write(5, 0x304, &mut bytes);
 
         assert_eq!(bytes_written, 2);
 
         let mut read_result = Vec::from([0u8; 6]);
-        let bytes_read = vecmem.mem_read("REG", 0x300, &mut read_result);
+        let bytes_read = vecmem.mem_read(5, 0x300, &mut read_result);
 
         assert_eq!(bytes_read, 6);
         assert_eq!(read_result, vec![0x20, 0x30, 0x40, 0x50, 0x55, 0x66]);
+    }
+
+    #[test]
+    fn test_memory_shift() {
+        let mut vecmem = VecMemory {
+            memmap: HashMap::new()
+        };
+
+        let mut submem1: SubMemory = SubMemory {
+            submap: Vec::new(),
+        };
+
+        submem1.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
+        submem1.submap.push(SubChunk { pos: 0x304, data: vec![0x60, 0x70, 0x80, 0x90] });
+        vecmem.memmap.insert(5, Box::from(submem1));
+
+        let mut submem2: SubMemory = SubMemory {
+            submap: Vec::new(),
+        };
+
+        submem2.submap.push(SubChunk { pos: 0x300, data: vec![0x22, 0x33, 0x44] });
+        vecmem.memmap.insert(7, Box::from(submem2));
+
+        vecmem.mem_shift(5, 6);
+
+        // first array should be at 0x306 now
+        let mut read_result = Vec::from([0u8; 3]);
+        let bytes_read = vecmem.mem_read(5, 0x306, &mut read_result);
+
+        assert_eq!(bytes_read, 3);
+        assert_eq!(read_result, vec![0x20, 0x30, 0x40]);
+
+        // second array at 0x30A now
+        let mut read_result = Vec::from([0u8; 4]);
+        let bytes_read = vecmem.mem_read(5, 0x30A, &mut read_result);
+
+        assert_eq!(bytes_read, 4);
+        assert_eq!(read_result, vec![0x60, 0x70, 0x80, 0x90]);
+
+        // data should not exist at original pos
+        let mut read_result = Vec::from([0u8; 4]);
+        let bytes_read = vecmem.mem_read(5, 0x300, &mut read_result);
+
+        assert_eq!(bytes_read, 0);
+
+        // second register should be unchanged
+        let mut read_result = Vec::from([0u8; 3]);
+        let bytes_read = vecmem.mem_read(7, 0x300, &mut read_result);
+
+        assert_eq!(bytes_read, 3);
+        assert_eq!(read_result, vec![0x22, 0x33, 0x44]);
     }
 }
