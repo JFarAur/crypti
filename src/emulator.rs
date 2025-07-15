@@ -49,6 +49,16 @@ pub fn get_register_idx(reg: Register) -> u64 {
     reg.full_register() as u64
 }
 
+pub fn get_register_low_or_high(reg: Register) -> usize {
+    match reg {
+        Register::AH
+        | Register::BH
+        | Register::CH
+        | Register::DH => 1,
+        _ => 0
+    }
+}
+
 impl Emulator {
     pub fn new() -> Emulator {
         Emulator { 
@@ -89,7 +99,9 @@ impl Emulator {
             OpKind::Immediate32to64 => Some((Value::from_bytes(&instruction.immediate32to64().to_le_bytes()), 8)),
             OpKind::Immediate64 => Some((Value::from_bytes(&instruction.immediate64().to_le_bytes()), 8)),
             OpKind::Register => {
-                let reg_val = get_reg_val( &self.regmap, get_register_idx(instruction.op_register(op)));
+                let op_reg = instruction.op_register(op);
+                let lowhigh = get_register_low_or_high(op_reg);
+                let reg_val = get_reg_val( &self.regmap, get_register_idx(op_reg), lowhigh);
                 match reg_val {
                     Some(val) => Some((val, instruction.op_register(op).size())),
                     None => None
@@ -102,7 +114,9 @@ impl Emulator {
                 let index_val = match reg_index {
                     Register::None => Value::zero(),
                     reg => {
-                        match get_reg_val(&self.regmap, reg as u64) {
+                        // TODO: Pretty sure that a high-byte register (aka AH, BH, CH, DH) can not possibly
+                        // be used for memory addressing, could be worth double checking.
+                        match get_reg_val(&self.regmap, reg as u64, 0) {
                             Some(reg_val) => reg_val,
                             None => Value::zero(), // TODO: 0 is not a good guess, value is legitimately unknown
                         }
@@ -137,7 +151,9 @@ impl Emulator {
     {
         match instruction.op_kind(op) {
             OpKind::Register => {
-                set_reg_val(&mut self.regmap, get_register_idx(instruction.op_register(op)), value, size);
+                let op_reg = instruction.op_register(op);
+                let lowhigh = get_register_low_or_high(op_reg);
+                set_reg_val(&mut self.regmap, get_register_idx(op_reg), value, size, lowhigh);
             },
             OpKind::Memory => {
                 let reg_base = instruction.memory_base();
@@ -146,7 +162,9 @@ impl Emulator {
                 let index_val = match reg_index {
                     Register::None => Value::zero(),
                     reg => {
-                        match get_reg_val(&mut self.regmap, reg as u64) {
+                        // TODO: Pretty sure that a high-byte register (aka AH, BH, CH, DH) can not possibly
+                        // be used for memory addressing, could be worth double checking.
+                        match get_reg_val(&mut self.regmap, reg as u64, 0) {
                             Some(reg_val) => reg_val,
                             None => Value::zero(), // TODO: if we don't have a value for the index register then not actually possible to go forward
                         }
@@ -402,5 +420,32 @@ mod tests {
         
         // test if emulation was correct
         assert_eq!(emu.regmap.get(&RAX).unwrap().as_zex_u64(8), 0x500020);
+    }
+
+    #[test]
+    fn test_emu_move_instruction_same_reg_diff_size_high() {
+        // Test some mov instructions that use the same register,
+        // but different operand sizes (e.g. AH and RAX, should modify the same register).
+        // Test when a high-byte register is used, which should
+        // affect the correct byte in the larger register.
+        let mut emu = Emulator::new();
+
+        // mov rax, 0x500000
+        // mov ah, 0x20
+        let instructions = vec![
+            Instruction::with2(Code::Mov_r64_imm64, Register::RAX, 0x500000).unwrap(),
+            Instruction::with2(Code::Mov_r8_imm8, Register::AH, 0x20).unwrap(),
+        ];
+
+        const RAX: u64 = Register::RAX as u64;
+
+        let EmulatorResult { info, reason: _reason }
+            = emu.emulate_until(&instructions, EmulatorStopReason::Nothing);
+
+        // all instructions emulated successfully
+        assert_eq!(info.instructions_emulated, 2);
+        
+        // test if emulation was correct
+        assert_eq!(emu.regmap.get(&RAX).unwrap().as_zex_u64(8), 0x502000);
     }
 }
