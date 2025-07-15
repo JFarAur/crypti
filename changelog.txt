@@ -1,3 +1,13 @@
+v0.2.0
+- Added a new analysis which attempts to detect common hashing algorithms. Currently the supported algorithms are:
+  * MD4/MD5
+  * FNV-1/FNV-1a, 32-bit and 64-bit variants
+  * SipHash
+  * bcrypt
+  * SHA-1, SHA-224, SHA-256, SHA-384, SHA-512
+- Functions with detected hashing algorithms are annotated alongside the XmmXor results, which can help the user in identifying
+  some of the "garbage string" results.
+
 v0.1.4
 - Some code refactoring and optimizations.
 - Improved emulation of registers and values in some specific scenarios.
