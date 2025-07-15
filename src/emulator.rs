@@ -332,7 +332,7 @@ impl Emulator {
                             reason: ReasonResult::InstructionResult((*instruction, result))
                         };
                     }
-                }
+                },
                 _ => ()
             };
         }
