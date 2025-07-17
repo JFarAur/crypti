@@ -13,6 +13,8 @@ mod emulator;
 mod hashconst;
 mod hashfunc;
 mod xmmxor;
+mod fnv;
+mod data_winapi;
 
 use crate::analysis::{Analysis, AnalysisOpts, AnalysisSet};
 use crate::loader::{load_pe_file};

@@ -10,6 +10,7 @@ goblin = "0.10"
 clap = { version = "4.5.41", features = ["derive"] }
 clap-num = "1.2.0"
 bytemuck = "1.23.1"
+const-str = "0.6.3"
 
 [profile.release]
 lto = true
