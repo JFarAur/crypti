@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
-use iced_x86::{Instruction, Mnemonic};
+use iced_x86::{Instruction, Mnemonic, OpKind};
 use anyhow::Result;
 
 use crate::analysis::{Analysis, AnalysisOpts, AnalysisResult, AnalysisResultType, AnalysisSet};
 use crate::cfg::{BasicBlock, CFGAnalysisResult};
 use crate::emulator::{Emulator, ResultInfo, ReasonResult, EmulatorResult, EmulatorStopReason, InstructionClass};
 use crate::loader::{Binary};
-use crate::hashconst::is_known_hash_func;
+use crate::hashconst::{is_known_hash_func, known_factor_u32, known_factor_u64};
 
 pub struct HashAnalysisResult {
     pub function_hash_algos: HashMap<u64, HashSet<String>>,
@@ -37,6 +37,20 @@ pub fn try_hash_analysis(_opts: &AnalysisOpts, basic_block: &BasicBlock) -> Hash
     let mut emu: Emulator = Emulator::new();
     let mut detected_algos: HashSet<String> = HashSet::new();
     let mut idx: usize = 0;
+
+    for instruction in &basic_block.instructions {
+        if instruction.mnemonic() == Mnemonic::Imul {
+            if instruction.op2_kind() == OpKind::Immediate32 {
+                if let Some(algo) = known_factor_u32(instruction.immediate32()) {
+                    detected_algos.insert(algo);
+                }
+            } else if instruction.op2_kind() == OpKind::Immediate64 {
+                if let Some(algo) = known_factor_u64(instruction.immediate64()) {
+                    detected_algos.insert(algo);
+                }
+            }
+        }
+    }
 
     loop {
         let instructions: &[Instruction] = &basic_block.instructions[idx..basic_block.instructions.len()];
