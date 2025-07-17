@@ -29,7 +29,8 @@ impl BasicBlock {
 pub struct FunctionBlock {
     pub virtual_start: u64,
     pub size: usize,
-    pub basic_blocks: HashMap<u64, BasicBlock>
+    pub basic_blocks: HashMap<u64, BasicBlock>,
+    pub instructions: Vec<Instruction>,
 }
 
 #[allow(dead_code)]
@@ -264,6 +265,7 @@ impl Analysis for CFGAnalysis {
                     let mut block_start = call_dest_virt;
                     let mut block: Vec<Instruction> = Vec::new();
                     let mut basic_blocks: HashMap<u64, BasicBlock> = HashMap::new();
+                    let mut fn_instructions = Vec::new();
 
                     let last_idx = match fun_iter.peek() {
                         Some(&last_addr) => match virt_to_idx.get(last_addr) {
@@ -293,6 +295,7 @@ impl Analysis for CFGAnalysis {
                         }
 
                         block.push(instruction);
+                        fn_instructions.push(instruction);
 
                         if instruction.mnemonic() == Mnemonic::Int3 {
                             basic_blocks.insert(block_start, BasicBlock {
@@ -375,7 +378,8 @@ impl Analysis for CFGAnalysis {
                             function_blocks.insert(func_start, FunctionBlock {
                                 virtual_start: func_start,
                                 size: (func_end_virt - func_start) as usize,
-                                basic_blocks: basic_blocks
+                                basic_blocks: basic_blocks,
+                                instructions: fn_instructions
                             });
                         }
                     } else {
