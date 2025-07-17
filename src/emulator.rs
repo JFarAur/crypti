@@ -125,7 +125,9 @@ impl Emulator {
                 let reg_index_size = reg_index.size();
                 let scale = instruction.memory_index_scale() as usize;
 
-                let total_offset = (index_val.as_zex_u64(reg_index_size) as usize) * scale + displacement;
+                // TODO: Not accurate emulation, but good enough for our purposes right now
+                let index_times_scale = (index_val.as_zex_u64(reg_index_size) as usize).checked_mul(scale).unwrap_or_default();
+                let total_offset = index_times_scale.checked_add(displacement).unwrap_or_default();
                 let memory_size = instruction.memory_size().size().min(64);
 
                 let mut arr: [u8; 64] = [0; 64];
@@ -172,7 +174,9 @@ impl Emulator {
                 };
                 let reg_index_size = reg_index.size();
                 let scale = instruction.memory_index_scale() as usize;
-                let total_offset = (index_val.as_zex_u64(reg_index_size) as usize) * scale + displacement;
+                // TODO: Not accurate emulation, but good enough for our purposes right now
+                let index_times_scale = (index_val.as_zex_u64(reg_index_size) as usize).checked_mul(scale).unwrap_or_default();
+                let total_offset = index_times_scale.checked_add(displacement).unwrap_or_default();
                 let memory_size = instruction.memory_size().size();
 
                 self.vecmem.mem_write( reg_base as u64, total_offset as i64, &value.data[0..memory_size]);
