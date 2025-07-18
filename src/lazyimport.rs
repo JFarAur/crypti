@@ -115,7 +115,6 @@ pub fn try_lazy_import_analysis(_opts: &AnalysisOpts, binary: &Binary, instructi
     let mut current_last_block: Option<&mut LazyImportBlock> = None;
 
     for instruction in instructions.iter() {
-        println!("{:X} {:?}", instruction.ip(), instruction.mnemonic());
         if instruction_is_peb_access(binary.bitness, instruction) {
             lazy_import_blocks.push(LazyImportBlock {
                 peb_access: *instruction,
