@@ -9,6 +9,20 @@ pub trait SimMemory {
     /// Returns the number of bytes read.
     fn mem_read(&self, register: u64, offset: i64, bytes: &mut [u8]) -> usize;
 
+    /// Mark or unmark the memory at [register+offset].
+    fn mem_mark(&mut self, register: u64, offset: i64, size: usize, flag: u8);
+
+    /// Unmark the memory at [register+offset].
+    fn mem_unmark(&mut self, register: u64, offset: i64, size: usize, flag: u8);
+
+    /// Check if the memory at [register+offset] is marked with `flag`.
+    /// Returns true if *every* byte in the region is marked with `flag`.
+    fn mem_is_marked(&mut self, register: u64, offset: i64, size: usize, flag: u8) -> bool;
+
+    /// Check if the memory at [register+offset] is marked with `flag`.
+    /// Returns true if *any* bytes in the region are marked with `flag`.
+    fn mem_has_mark(&mut self, register: u64, offset: i64, size: usize, flag: u8) -> bool;
+
     /// Shift all offsets for the submemory of `register`
     /// by `offset`.
     #[allow(dead_code)]
@@ -18,6 +32,36 @@ pub trait SimMemory {
 struct SubChunk {
     pos: i64,
     data: Vec<u8>,
+    marking: Vec<u8>,
+}
+
+impl SubChunk {
+    pub fn new(pos: i64, data: Vec<u8>) -> SubChunk {
+        let size = data.len();
+
+        SubChunk {
+            pos: pos,
+            data: data,
+            marking: Vec::from_iter(std::iter::repeat_n(0 as u8, size)),
+        }
+    }
+
+    pub fn extend(&mut self, additional_count: usize) {
+        self.data.extend(std::iter::repeat_n(0u8, additional_count));
+        self.marking.extend(std::iter::repeat_n(0u8, additional_count));
+    }
+
+    pub fn preextend(&mut self, additional_count: usize) {
+        let data_with_prepended = std::iter::repeat_n(0u8, additional_count)
+            .chain(self.data.iter().copied())
+            .collect();
+        self.data = data_with_prepended;
+
+        let marking_with_prepended = std::iter::repeat_n(0u8, additional_count)
+            .chain(self.marking.iter().copied())
+            .collect();
+        self.marking = marking_with_prepended;
+    }
 }
 
 struct SubMemory {
@@ -57,7 +101,7 @@ fn get_chunk_mut<'a>(submem: &'a mut SubMemory, offset: i64) -> Option<&'a mut S
 }
 
 fn add_chunk<'a>(submem: &'a mut SubMemory, offset: i64) -> &'a mut SubChunk {
-    submem.submap.push(SubChunk { pos: offset, data: Vec::new() });
+    submem.submap.push(SubChunk { pos: offset, data: Vec::new(), marking: Vec::new() });
     submem.submap.last_mut().unwrap() // guaranteed to exist after push
 }
 
@@ -127,16 +171,13 @@ fn touch_submap_offset_mut(submem: &mut SubMemory, offset: i64, count: usize) ->
         
         if overlaps_start {
             let prepend_count = (chunk.pos - offset) as usize;
-            let mut with_prepended = Vec::from_iter(std::iter::repeat_n(0 as u8, prepend_count));
-            with_prepended.extend(chunk.data.iter());
-
-            chunk.data = with_prepended;
+            chunk.preextend(prepend_count);
             chunk.pos = offset;
         }
 
         if overlaps_end {
             let append_count = (offset + count as i64) - mem_end;
-            chunk.data.extend(std::iter::repeat_n(0 as u8, append_count as usize));
+            chunk.extend(append_count as usize);
         }
 
         if overlaps_start || overlaps_end {
@@ -174,10 +215,43 @@ fn get_submap_offset_mut<'a>(submem: &'a mut SubMemory, offset: i64, count: usiz
         },
         None => {
             let chunk = add_chunk(submem, offset);
-            // fill the chunk with `count` zeros
-            chunk.data.extend(std::iter::repeat_n(0, count));
+            chunk.extend(count);
 
             return &mut chunk.data[0..count];
+        }
+    }
+}
+
+/// Acquire an immutable reference to the marking of an area of sub memory pointed to by `offset` of size `count` bytes.
+/// If the memory does not exist, or does not cover at least `count` bytes, returns None.
+fn get_marking_offset<'a>(submem: &'a SubMemory, offset: i64, count: usize) -> Option<&'a [u8]> {
+    let exis = touch_submap_offset(submem, offset, count);
+
+    match exis {
+        Some((pos, subpos)) => {
+            let chunk = get_chunk(submem, pos).unwrap(); // guaranteed to exist if touch returned Some
+
+            Some(&chunk.marking[subpos..subpos + count])
+        },
+        None => None
+    }
+}
+
+/// Acquire a reference to the marking of an area of memory pointed to by `offset` of size `count` bytes.
+fn get_marking_offset_mut<'a>(submem: &'a mut SubMemory, offset: i64, count: usize) -> &'a mut [u8] {
+    let exis = touch_submap_offset_mut(submem, offset, count);
+
+    match exis {
+        Some((pos, subpos)) => {
+            let chunk = get_chunk_mut(submem, pos).unwrap(); // guaranteed to exist if touch returned Some
+
+            return &mut chunk.marking[subpos..subpos + count];
+        },
+        None => {
+            let chunk = add_chunk(submem, offset);
+            chunk.extend(count);
+
+            return &mut chunk.marking[0..count];
         }
     }
 }
@@ -212,6 +286,56 @@ impl SimMemory for VecMemory {
         }
     }
 
+    fn mem_mark(&mut self, register: u64, offset: i64, size: usize, flag: u8) {
+        let submem = self.memmap.entry(register).or_insert(
+            Box::from(SubMemory {
+                submap: Vec::new()
+            })
+        );
+
+        let dest = get_marking_offset_mut(submem, offset, size);
+        let min_size = dest.len().min(size);
+        dest[0..min_size].iter_mut().for_each(|x| *x |= flag);
+    }
+
+    fn mem_unmark(&mut self, register: u64, offset: i64, size: usize, flag: u8) {
+        let submem = self.memmap.entry(register).or_insert(
+            Box::from(SubMemory {
+                submap: Vec::new()
+            })
+        );
+
+        let dest = get_marking_offset_mut(submem, offset, size);
+        let min_size = dest.len().min(size);
+        dest[0..min_size].iter_mut().for_each(|x| *x &= !flag);
+    }
+
+    fn mem_is_marked(&mut self, register: u64, offset: i64, size: usize, flag: u8) -> bool {
+        match self.memmap.get(&register) {
+            Some(submem) => {
+                if let Some(marking_bytes) = get_marking_offset(submem, offset, size) && marking_bytes.len() >= size {
+                    return marking_bytes.iter().take(size).all(|x| (*x & flag) == flag)
+                } else {
+                    return false;
+                }
+            },
+            None => false
+        }
+    }
+
+    fn mem_has_mark(&mut self, register: u64, offset: i64, size: usize, flag: u8) -> bool {
+        match self.memmap.get(&register) {
+            Some(submem) => {
+                if let Some(marking_bytes) = get_marking_offset(submem, offset, size) && marking_bytes.len() >= size {
+                    return marking_bytes.iter().take(size).any(|x| (*x & flag) == flag)
+                } else {
+                    return false;
+                }
+            },
+            None => false
+        }
+    }
+
     fn mem_shift(&mut self, register: u64, offset: i64) {
         self.memmap.entry(register).and_modify(|submem| {
             submem.submap.iter_mut().for_each(|chunk| chunk.pos += offset);
@@ -229,7 +353,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x200, data: vec![0x20, 0x30, 0x40, 0x50] });
+        submem.submap.push(SubChunk::new(0x200, vec![0x20, 0x30, 0x40, 0x50]));
 
         // fits, no modification needed
         // offset overlaps memory start
@@ -247,7 +371,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x200, data: vec![0x20, 0x30, 0x40, 0x50] });
+        submem.submap.push(SubChunk::new(0x200, vec![0x20, 0x30, 0x40, 0x50]));
 
         // fits, no modification needed
         // offset overlaps memory start
@@ -260,7 +384,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x200, data: vec![0x20, 0x30, 0x40, 0x50] });
+        submem.submap.push(SubChunk::new(0x200, vec![0x20, 0x30, 0x40, 0x50]));
 
         // scenario 2: trailing overlap, need append
         assert_eq!(touch_submap_offset_mut(&mut submem, 0x202, 6), Some((0x200, 2)));
@@ -276,7 +400,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x200, data: vec![0x20, 0x30, 0x40, 0x50] });
+        submem.submap.push(SubChunk::new(0x200, vec![0x20, 0x30, 0x40, 0x50]));
 
         // scenario 2b: trailing overlap, need append
         // In this scenario, only the very edge overlaps, but the touch
@@ -296,7 +420,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x200, data: vec![0x20, 0x30, 0x40, 0x50] });
+        submem.submap.push(SubChunk::new(0x200, vec![0x20, 0x30, 0x40, 0x50]));
 
         // scenario 3: leading overlap, need prepend
         assert_eq!(touch_submap_offset_mut(&mut submem, 0x1FC, 6), Some((0x1FC, 0)));
@@ -312,7 +436,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x200, data: vec![0x20, 0x30, 0x40, 0x50] });
+        submem.submap.push(SubChunk::new(0x200, vec![0x20, 0x30, 0x40, 0x50]));
 
         // scenario 3b: leading overlap, need prepend
         // In this scenario, only the edges are exactly touching.
@@ -332,7 +456,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
+        submem.submap.push(SubChunk::new(0x300, vec![0x20, 0x30, 0x40]));
 
         // scenario 4: full overlap, need both prepend and append
         assert_eq!(touch_submap_offset_mut(&mut submem, 0x2FD, 9), Some((0x2FD, 0)));
@@ -351,7 +475,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
+        submem.submap.push(SubChunk::new(0x300, vec![0x20, 0x30, 0x40]));
         vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = Vec::from([0u8; 2]);
@@ -371,7 +495,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
+        submem.submap.push(SubChunk::new(0x300, vec![0x20, 0x30, 0x40]));
         vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = Vec::from([0u8; 2]);
@@ -391,7 +515,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
+        submem.submap.push(SubChunk::new(0x300, vec![0x20, 0x30, 0x40]));
         vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = Vec::from([0u8; 2]);
@@ -410,7 +534,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
+        submem.submap.push(SubChunk::new(0x300, vec![0x20, 0x30, 0x40]));
         vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = Vec::from([0u8; 2]);
@@ -429,7 +553,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
+        submem.submap.push(SubChunk::new(0x300, vec![0x20, 0x30, 0x40]));
         vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = Vec::from([0u8; 4]);
@@ -448,7 +572,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
+        submem.submap.push(SubChunk::new(0x300, vec![0x20, 0x30, 0x40]));
         vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = vec![0x55, 0x66];
@@ -473,7 +597,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40, 0x50, 0x60] });
+        submem.submap.push(SubChunk::new(0x300, vec![0x20, 0x30, 0x40, 0x50, 0x60]));
         vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = vec![0x55, 0x66];
@@ -498,7 +622,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40, 0x50, 0x60] });
+        submem.submap.push(SubChunk::new(0x300, vec![0x20, 0x30, 0x40, 0x50, 0x60]));
         vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = vec![0x55, 0x66];
@@ -523,7 +647,7 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40, 0x50, 0x60] });
+        submem.submap.push(SubChunk::new(0x300, vec![0x20, 0x30, 0x40, 0x50, 0x60]));
         vecmem.memmap.insert(5, Box::from(submem));
 
         let mut bytes = vec![0x55, 0x66];
@@ -548,15 +672,15 @@ mod tests {
             submap: Vec::new(),
         };
 
-        submem1.submap.push(SubChunk { pos: 0x300, data: vec![0x20, 0x30, 0x40] });
-        submem1.submap.push(SubChunk { pos: 0x304, data: vec![0x60, 0x70, 0x80, 0x90] });
+        submem1.submap.push(SubChunk::new(0x300, vec![0x20, 0x30, 0x40]));
+        submem1.submap.push(SubChunk::new(0x304, vec![0x60, 0x70, 0x80, 0x90]));
         vecmem.memmap.insert(5, Box::from(submem1));
 
         let mut submem2: SubMemory = SubMemory {
             submap: Vec::new(),
         };
 
-        submem2.submap.push(SubChunk { pos: 0x300, data: vec![0x22, 0x33, 0x44] });
+        submem2.submap.push(SubChunk::new(0x300, vec![0x22, 0x33, 0x44]));
         vecmem.memmap.insert(7, Box::from(submem2));
 
         vecmem.mem_shift(5, 6);
@@ -587,5 +711,70 @@ mod tests {
 
         assert_eq!(bytes_read, 3);
         assert_eq!(read_result, vec![0x22, 0x33, 0x44]);
+    }
+
+    #[test]
+    fn test_memory_mark_one_flag() {
+        // This tests if marking works on a region of memory with just one
+        // flag.
+        let mut vecmem = VecMemory {
+            memmap: HashMap::new()
+        };
+
+        let mut submem: SubMemory = SubMemory {
+            submap: Vec::new(),
+        };
+
+        submem.submap.push(SubChunk::new(0x300, vec![0x20, 0x30, 0x40, 0x50, 0x60]));
+        vecmem.memmap.insert(5, Box::from(submem));
+
+        let flag: u8 = 1u8 << 2;
+
+        vecmem.mem_mark(5, 0x301, 3, flag);
+
+        // Test mem_is_marked on some scenarios
+        assert!(vecmem.mem_is_marked(5, 0x301, 3, flag));
+        assert!(!vecmem.mem_is_marked(5, 0x301, 4, flag));
+
+        // Test mem_has_mark on some scenarios
+        assert!(vecmem.mem_has_mark(5, 0x300, 5, flag));
+        assert!(!vecmem.mem_has_mark(5, 0x300, 1, flag));
+    }
+
+    #[test]
+    fn test_memory_mark_several_flags() {
+        // This tests if marking works on a region of memory with several,
+        // potentially overlapping flags.
+        let mut vecmem = VecMemory {
+            memmap: HashMap::new()
+        };
+
+        let mut submem: SubMemory = SubMemory {
+            submap: Vec::new(),
+        };
+
+        submem.submap.push(SubChunk::new(0x300, vec![0x20, 0x30, 0x40, 0x50, 0x60]));
+        vecmem.memmap.insert(5, Box::from(submem));
+
+        let flag1: u8 = 1u8 << 2;
+        let flag2: u8 = 1u8 << 3;
+        vecmem.mem_mark(5, 0x301, 2, flag1);
+        vecmem.mem_mark(5, 0x302, 2, flag2);
+
+        // Test mem_is_marked on some scenarios
+        assert!(vecmem.mem_is_marked(5, 0x301, 2, flag1));
+        assert!(vecmem.mem_is_marked(5, 0x302, 2, flag2));
+        assert!(vecmem.mem_is_marked(5, 0x302, 1, flag1 | flag2));
+        assert!(!vecmem.mem_is_marked(5, 0x301, 3, flag2));
+        assert!(!vecmem.mem_is_marked(5, 0x302, 2, flag1));
+        assert!(!vecmem.mem_is_marked(5, 0x301, 2, flag1 | flag2));
+
+        // Test mem_has_mark on some scenarios
+        assert!(vecmem.mem_has_mark(5, 0x300, 5, flag1));
+        assert!(vecmem.mem_has_mark(5, 0x300, 5, flag2));
+        assert!(vecmem.mem_has_mark(5, 0x300, 5, flag1 | flag2));
+        assert!(!vecmem.mem_has_mark(5, 0x300, 1, flag1));
+        assert!(!vecmem.mem_has_mark(5, 0x300, 2, flag2));
+        assert!(!vecmem.mem_has_mark(5, 0x300, 2, flag1 | flag2));
     }
 }
