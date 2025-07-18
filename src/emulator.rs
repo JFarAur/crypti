@@ -20,6 +20,8 @@ pub enum InstructionClass {
 pub enum EmulatorStopReason {
     PreInstruction(InstructionClass),
     PostInstruction(InstructionClass),
+    FlaggedMemoryRead(u8),
+    FlaggedMemoryWrite(u8),
     Nothing,
 }
 
@@ -31,6 +33,8 @@ pub struct ResultInfo {
 pub enum ReasonResult {
     InstructionParameters((Instruction, HashMap<String, MaybeValue>)),
     InstructionResult((Instruction, MaybeValue)),
+    FlaggedMemoryRead((u64, MaybeValue)),
+    FlaggedMemoryWrite((u64, MaybeValue)),
     OutOfInstructions,
 }
 
@@ -59,8 +63,31 @@ pub fn get_register_low_or_high(reg: Register) -> usize {
     }
 }
 
+pub enum OpLoadResult {
+    Register((Register, MaybeValue)),
+    Memory((Option<u64>, MaybeValue)),
+    Immediate(MaybeValue),
+    Nothing(MaybeValue),
+}
+
+impl OpLoadResult {
+    pub fn value(&self) -> &MaybeValue {
+        match self {
+            OpLoadResult::Register((_, value)) => value,
+            OpLoadResult::Memory((_, value)) => value,
+            OpLoadResult::Immediate(value) => value,
+            OpLoadResult::Nothing(value) => value,
+        }
+    }
+}
+pub enum OpStoreResult {
+    Register((Register, usize)),
+    Memory((Option<u64>, usize)),
+    Nothing,
+}
+
 impl Emulator {
-    pub fn new() -> Emulator {
+    pub fn new(_bitness: u32) -> Emulator {
         Emulator { 
             regmap: HashMap::new(),
             vecmem: VecMemory::new(),
@@ -86,25 +113,25 @@ impl Emulator {
     pub fn load_operand(
         &self,
         instruction: &Instruction,
-        op: u32) -> Option<(Value, usize)>
+        op: u32) -> OpLoadResult
     {
         match instruction.op_kind(op) {
-            OpKind::Immediate8 => Some((Value::from_bytes(&instruction.immediate8().to_le_bytes()), 1)),
-            OpKind::Immediate8_2nd => Some((Value::from_bytes(&instruction.immediate8_2nd().to_le_bytes()), 1)),
-            OpKind::Immediate8to16 => Some((Value::from_bytes(&instruction.immediate8to16().to_le_bytes()), 2)),
-            OpKind::Immediate8to32 => Some((Value::from_bytes(&instruction.immediate8to32().to_le_bytes()), 4)),
-            OpKind::Immediate8to64 => Some((Value::from_bytes(&instruction.immediate8to64().to_le_bytes()), 8)),
-            OpKind::Immediate16 => Some((Value::from_bytes(&instruction.immediate16().to_le_bytes()), 2)),
-            OpKind::Immediate32 => Some((Value::from_bytes(&instruction.immediate32().to_le_bytes()), 4)),
-            OpKind::Immediate32to64 => Some((Value::from_bytes(&instruction.immediate32to64().to_le_bytes()), 8)),
-            OpKind::Immediate64 => Some((Value::from_bytes(&instruction.immediate64().to_le_bytes()), 8)),
+            OpKind::Immediate8 => OpLoadResult::Immediate(Some((Value::from_bytes(&instruction.immediate8().to_le_bytes()), 1))),
+            OpKind::Immediate8_2nd => OpLoadResult::Immediate(Some((Value::from_bytes(&instruction.immediate8_2nd().to_le_bytes()), 1))),
+            OpKind::Immediate8to16 => OpLoadResult::Immediate(Some((Value::from_bytes(&instruction.immediate8to16().to_le_bytes()), 2))),
+            OpKind::Immediate8to32 => OpLoadResult::Immediate(Some((Value::from_bytes(&instruction.immediate8to32().to_le_bytes()), 4))),
+            OpKind::Immediate8to64 => OpLoadResult::Immediate(Some((Value::from_bytes(&instruction.immediate8to64().to_le_bytes()), 8))),
+            OpKind::Immediate16 => OpLoadResult::Immediate(Some((Value::from_bytes(&instruction.immediate16().to_le_bytes()), 2))),
+            OpKind::Immediate32 => OpLoadResult::Immediate(Some((Value::from_bytes(&instruction.immediate32().to_le_bytes()), 4))),
+            OpKind::Immediate32to64 => OpLoadResult::Immediate(Some((Value::from_bytes(&instruction.immediate32to64().to_le_bytes()), 8))),
+            OpKind::Immediate64 => OpLoadResult::Immediate(Some((Value::from_bytes(&instruction.immediate64().to_le_bytes()), 8))),
             OpKind::Register => {
                 let op_reg = instruction.op_register(op);
                 let lowhigh = get_register_low_or_high(op_reg);
                 let reg_val = get_reg_val( &self.regmap, get_register_idx(op_reg), lowhigh);
                 match reg_val {
-                    Some(val) => Some((val, instruction.op_register(op).size())),
-                    None => None
+                    Some(val) => OpLoadResult::Register((op_reg, Some((val, instruction.op_register(op).size())))),
+                    None => OpLoadResult::Register((op_reg, None))
                 }
             },
             OpKind::Memory => {
@@ -133,13 +160,16 @@ impl Emulator {
                 let mut arr: [u8; 64] = [0; 64];
                 let result_count = self.vecmem.mem_read( reg_base as u64, total_offset as i64, &mut arr[0..memory_size]);
                 
+                let absolute_address = get_reg_val(&self.regmap, get_register_idx(reg_base), 0)
+                    .and_then(|x| x.as_zex_u64(8).checked_add(total_offset as u64));
+
                 if result_count == memory_size {
-                    Some((Value::from_bytes(&arr), memory_size))
+                    OpLoadResult::Memory((absolute_address, Some((Value::from_bytes(&arr), memory_size))))
                 } else {
-                    None
+                    OpLoadResult::Memory((absolute_address, None))
                 }
             },
-            _ => None
+            _ => OpLoadResult::Nothing(None)
         }
     }
 
@@ -149,13 +179,15 @@ impl Emulator {
         op: u32,
         value: &Value,
         size: usize
-        )
+        ) -> OpStoreResult
     {
         match instruction.op_kind(op) {
             OpKind::Register => {
                 let op_reg = instruction.op_register(op);
                 let lowhigh = get_register_low_or_high(op_reg);
                 set_reg_val(&mut self.regmap, get_register_idx(op_reg), value, size, lowhigh);
+
+                OpStoreResult::Register((op_reg, size))
             },
             OpKind::Memory => {
                 let reg_base = instruction.memory_base();
@@ -180,9 +212,14 @@ impl Emulator {
                 let memory_size = instruction.memory_size().size();
 
                 self.vecmem.mem_write( reg_base as u64, total_offset as i64, &value.data[0..memory_size]);
+
+                let absolute_address = get_reg_val(&self.regmap, get_register_idx(reg_base), 0)
+                    .and_then(|x| x.as_zex_u64(8).checked_add(total_offset as u64));
+
+                OpStoreResult::Memory((absolute_address, size))
             },
-            _ => ()
-        };
+            _ => OpStoreResult::Nothing
+        }
     }
 
     pub fn process_operands(&self,
@@ -226,7 +263,7 @@ impl Emulator {
                     /* If there is a pre instruction type set and this instruction is not in the ignore list
                      (it was not previously processed by us in the last iteration) then return. */
                     if let EmulatorStopReason::PreInstruction(InstructionClass::MovOrVectorMov) = stop_reason {
-                        let ops = vec![(1, src)];
+                        let ops = vec![(1, *src.value())];
                         let params: HashMap<String, MaybeValue> = self.process_operands(&mut formatter, instruction, &ops);
 
                         return EmulatorResult {
@@ -236,17 +273,39 @@ impl Emulator {
                     }
 
                     /* Only if we got some value based on the source operand */
-                    if let Some((src_val, src_size)) = &src {
+                    let dest = if let Some((src_val, src_size)) = src.value() {
                         /* Act depending on destination operand */
-                        self.store_operand(instruction, 0, src_val, *src_size);
-                    }
+                        self.store_operand(instruction, 0, src_val, *src_size)
+                    } else {
+                        OpStoreResult::Nothing
+                    };
 
                     /* If there is a post instruction type set, return with the result. */
                     if let EmulatorStopReason::PostInstruction(InstructionClass::MovOrVectorMov) = stop_reason {
                         return EmulatorResult {
                             info: ResultInfo { instructions_emulated: instruction_idx + 1 },
-                            reason: ReasonResult::InstructionResult((*instruction, src))
+                            reason: ReasonResult::InstructionResult((*instruction, *src.value()))
                         };
+                    }
+
+                    if let EmulatorStopReason::FlaggedMemoryRead(flag) = stop_reason {
+                        if let OpLoadResult::Memory((Some(loc), Some((value, size)))) = src {
+                            if self.vecmem.mem_is_marked(Register::None as u64, loc as i64, size, flag) {
+                                return EmulatorResult {
+                                    info: ResultInfo { instructions_emulated: instruction_idx + 1 },
+                                    reason: ReasonResult::FlaggedMemoryRead((loc, Some((value, size)))),
+                                };
+                            }
+                        }
+                    } else if let EmulatorStopReason::FlaggedMemoryWrite(flag) = stop_reason {
+                        if let OpStoreResult::Memory((Some(loc), size)) = dest {
+                            if self.vecmem.mem_is_marked(Register::None as u64, loc as i64, size, flag) {
+                                return EmulatorResult {
+                                    info: ResultInfo { instructions_emulated: instruction_idx + 1 },
+                                    reason: ReasonResult::FlaggedMemoryWrite((loc, *src.value())),
+                                };
+                            }
+                        }
                     }
                 },
                 Mnemonic::Xorps
@@ -259,7 +318,7 @@ impl Emulator {
                     if let EmulatorStopReason::PreInstruction(InstructionClass::XorOrVectorXor) = stop_reason {
                         self.ignore_once.insert(instruction.ip());
 
-                        let ops = vec![(0, dest), (1, src)];
+                        let ops = vec![(0, *dest.value()), (1, *src.value())];
                         let params: HashMap<String, MaybeValue> = self.process_operands(&mut formatter, instruction, &ops);
 
                         return EmulatorResult {
@@ -268,8 +327,8 @@ impl Emulator {
                         };
                     }
 
-                    let result: MaybeValue = dest.as_ref()
-                        .zip(src.as_ref())
+                    let result: MaybeValue = dest.value().as_ref()
+                        .zip(src.value().as_ref())
                         .map(|((dest_val, dest_size), (src_val, src_size))| {
                             let minsize: usize = (*dest_size).min(*src_size);
                             let mask: u64 = if *src_size == 64 { !0 } else { (1 << minsize) - 1 };
@@ -305,7 +364,7 @@ impl Emulator {
                     if let EmulatorStopReason::PreInstruction(InstructionClass::XorOrVectorXor) = stop_reason {
                         self.ignore_once.insert(instruction.ip());
 
-                        let ops = vec![(0, dest), (1, src1), (2, src2)];
+                        let ops = vec![(0, *dest.value()), (1, *src1.value()), (2, *src2.value())];
                         let params: HashMap<String, MaybeValue> = self.process_operands(&mut formatter, instruction, &ops);
 
                         return EmulatorResult {
@@ -314,8 +373,8 @@ impl Emulator {
                         };
                     }
 
-                    let result: MaybeValue = src1.as_ref()
-                        .zip(src2.as_ref())
+                    let result: MaybeValue = src1.value().as_ref()
+                        .zip(src2.value().as_ref())
                         .map(|((dest_val, dest_size), (src_val, src_size))| {
                             let minsize: usize = (*dest_size).min(*src_size);
                             let mask: u64 = if *src_size == 64 { !0 } else { (1 << minsize) - 1 };
@@ -359,7 +418,7 @@ mod tests {
         // Test some different mov instructions,
         // some with immediate operands, some with
         // register operands, some with memory operands.
-        let mut emu = Emulator::new();
+        let mut emu = Emulator::new(64);
 
         // mov rax, 0x50
         // mov rbx, 0xFFFFFF0
@@ -405,7 +464,7 @@ mod tests {
         // but different operand sizes (e.g. AL and RAX, should modify the same register).
         // Only test when the smaller register is the least-significant portion
         // of the largest register.
-        let mut emu = Emulator::new();
+        let mut emu = Emulator::new(64);
 
         // mov rax, 0x500000
         // mov al, 0x20
@@ -432,7 +491,7 @@ mod tests {
         // but different operand sizes (e.g. AH and RAX, should modify the same register).
         // Test when a high-byte register is used, which should
         // affect the correct byte in the larger register.
-        let mut emu = Emulator::new();
+        let mut emu = Emulator::new(64);
 
         // mov rax, 0x500000
         // mov ah, 0x20

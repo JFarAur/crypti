@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use iced_x86::{Instruction, Mnemonic, OpKind};
 use anyhow::Result;
 
-use crate::analysis::{Analysis, AnalysisOpts, AnalysisResult, AnalysisResultType, AnalysisSet};
+use crate::analysis::{Analysis, AnalysisResult, AnalysisResultType, AnalysisSet};
 use crate::cfg::{BasicBlock, CFGAnalysisResult};
 use crate::emulator::{Emulator, ResultInfo, ReasonResult, EmulatorResult, EmulatorStopReason, InstructionClass};
 use crate::loader::{Binary};
@@ -33,8 +33,8 @@ impl AnalysisResult for HashAnalysisResult {
 
 pub struct HashAnalysis {}
 
-pub fn try_hash_analysis(_opts: &AnalysisOpts, basic_block: &BasicBlock) -> HashSet<String> {
-    let mut emu: Emulator = Emulator::new();
+pub fn try_hash_analysis(binary: &Binary, basic_block: &BasicBlock) -> HashSet<String> {
+    let mut emu: Emulator = Emulator::new(binary.bitness);
     let mut detected_algos: HashSet<String> = HashSet::new();
     let mut idx: usize = 0;
 
@@ -96,7 +96,7 @@ fn block_contains_xor(basic_block: &BasicBlock) -> bool {
 }
 
 impl Analysis for HashAnalysis {
-    fn analyze(&self, analyses: &AnalysisSet, _binary: &Binary) -> Result<Box<dyn AnalysisResult>> {
+    fn analyze(&self, analyses: &AnalysisSet, binary: &Binary) -> Result<Box<dyn AnalysisResult>> {
         let cfg_result = analyses.get_of_type(AnalysisResultType::CFG)?
             .as_type::<CFGAnalysisResult>()?;
 
@@ -108,7 +108,7 @@ impl Analysis for HashAnalysis {
             }
 
             for (&_block_start, basic_block) in &func_block.basic_blocks {
-                let detected_algos = try_hash_analysis(&analyses.opts, basic_block);
+                let detected_algos = try_hash_analysis(binary, basic_block);
 
                 if detected_algos.len() > 0 {
                     algos_map.entry(func_start).or_insert(HashSet::new()).extend(detected_algos);
