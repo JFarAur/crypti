@@ -9,6 +9,7 @@ pub enum AnalysisResultType {
     CFG,
     XmmXor,
     Hash,
+    LazyImport,
 }
 
 pub struct AnalysisOpts {
@@ -23,6 +24,7 @@ impl fmt::Display for AnalysisResultType {
             AnalysisResultType::CFG => "CFG",
             AnalysisResultType::XmmXor => "XmmXor",
             AnalysisResultType::Hash => "Hash",
+            AnalysisResultType::LazyImport => "LazyImport",
         })
     }
 }
