@@ -14,6 +14,7 @@ mod hashconst;
 mod hashfunc;
 mod xmmxor;
 mod fnv;
+mod tib;
 mod data_winapi;
 mod hashfind;
 mod lazyimport;
