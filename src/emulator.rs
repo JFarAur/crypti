@@ -8,7 +8,7 @@ use crate::registers::{Value, get_reg_val, set_reg_val};
 /// 
 /// `None` is an unknown value; the operand had no known value prior to
 /// being read.
-type MaybeValue = Option<(Value, usize)>;
+pub type MaybeValue = Option<(Value, usize)>;
 
 #[allow(dead_code)]
 pub enum InstructionClass {
