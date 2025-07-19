@@ -33,8 +33,8 @@ pub struct ResultInfo {
 pub enum ReasonResult {
     InstructionParameters((Instruction, HashMap<String, MaybeValue>)),
     InstructionResult((Instruction, MaybeValue)),
-    FlaggedMemoryRead((u64, MaybeValue)),
-    FlaggedMemoryWrite((u64, MaybeValue)),
+    FlaggedMemoryRead((Instruction, u64, MaybeValue)),
+    FlaggedMemoryWrite((Instruction, u64, MaybeValue)),
     OutOfInstructions,
 }
 
@@ -293,7 +293,7 @@ impl Emulator {
                             if self.vecmem.mem_is_marked(Register::None as u64, loc as i64, size, flag) {
                                 return EmulatorResult {
                                     info: ResultInfo { instructions_emulated: instruction_idx + 1 },
-                                    reason: ReasonResult::FlaggedMemoryRead((loc, Some((value, size)))),
+                                    reason: ReasonResult::FlaggedMemoryRead((*instruction, loc, Some((value, size)))),
                                 };
                             }
                         }
@@ -302,7 +302,7 @@ impl Emulator {
                             if self.vecmem.mem_is_marked(Register::None as u64, loc as i64, size, flag) {
                                 return EmulatorResult {
                                     info: ResultInfo { instructions_emulated: instruction_idx + 1 },
-                                    reason: ReasonResult::FlaggedMemoryWrite((loc, *src.value())),
+                                    reason: ReasonResult::FlaggedMemoryWrite((*instruction, loc, *src.value())),
                                 };
                             }
                         }
