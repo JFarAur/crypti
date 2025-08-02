@@ -1,3 +1,6 @@
+v0.3.0
+- Added a new analysis which can detect some common forms of lazy imports via PEB_LDR_DATA.
+
 v0.2.0
 - Added a new analysis which attempts to detect common hashing algorithms. Currently the supported algorithms are:
   * MD4/MD5

@@ -2,7 +2,7 @@ use std::collections::{HashMap};
 use iced_x86::{Instruction, Mnemonic};
 use anyhow::Result;
 
-use crate::analysis::{Analysis, AnalysisOpts, AnalysisResult, AnalysisResultType, AnalysisSet};
+use crate::analysis::{Analysis, AnalysisResult, AnalysisResultType, AnalysisSet};
 use crate::cfg::{BasicBlock, CFGAnalysisResult};
 use crate::emulator::{Emulator, ResultInfo, ReasonResult, EmulatorResult, EmulatorStopReason, InstructionClass};
 use crate::hashfunc::HashAnalysisResult;
@@ -128,8 +128,8 @@ fn log_xor_result(decrypted_strings: &mut HashMap<u64, DecodedString>, result: &
 
 pub struct XorAnalysis {}
 
-pub fn try_decrypt_xor(_opts: &AnalysisOpts, basic_block: &BasicBlock) -> HashMap<u64, DecodedString> {
-    let mut emu: Emulator = Emulator::new();
+pub fn try_decrypt_xor(binary: &Binary, basic_block: &BasicBlock) -> HashMap<u64, DecodedString> {
+    let mut emu: Emulator = Emulator::new(binary.bitness);
     let mut decrypted_strings: HashMap<u64, DecodedString> = HashMap::new();
     let mut idx: usize = 0;
 
@@ -177,7 +177,7 @@ fn block_contains_xor(basic_block: &BasicBlock) -> bool {
 }
 
 impl Analysis for XorAnalysis {
-    fn analyze(&self, analyses: &AnalysisSet, _binary: &Binary) -> Result<Box<dyn AnalysisResult>> {
+    fn analyze(&self, analyses: &AnalysisSet, binary: &Binary) -> Result<Box<dyn AnalysisResult>> {
         let cfg_result = analyses.get_of_type(AnalysisResultType::CFG)?
             .as_type::<CFGAnalysisResult>()?;
         let hash_result = analyses.get_of_type(AnalysisResultType::Hash)?
@@ -190,7 +190,7 @@ impl Analysis for XorAnalysis {
             for (&_block_start, basic_block) in &func_block.basic_blocks {
                 if !block_contains_xor(basic_block) { continue; }
 
-                let decrypted_strings = try_decrypt_xor(&analyses.opts, basic_block);
+                let decrypted_strings = try_decrypt_xor(binary, basic_block);
 
                 if decrypted_strings.len() > 0 {
                     string_map.entry(func_start).or_insert(HashMap::new()).extend(decrypted_strings);

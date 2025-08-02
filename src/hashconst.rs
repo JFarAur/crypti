@@ -39,6 +39,13 @@ pub fn known_hash_u32(hash_value: u32) -> Option<String> {
     }
 }
 
+pub fn known_factor_u32(factor: u32) -> Option<String> {
+    match factor {
+        0x1000193 => Some("FNV/32".to_string()),
+        _ => None
+    }
+}
+
 pub fn known_hash_u64(hash_value: u64) -> Option<String> {
     match hash_value {
         0x736f6d6570736575
@@ -63,6 +70,13 @@ pub fn known_hash_u64(hash_value: u64) -> Option<String> {
         | 0x5be0cd19137e2179 => Some("SHA512".to_string()),
         0xcbf29ce484222325
         | 0x100000001b3 => Some("FNV/64".to_string()),
+        _ => None
+    }
+}
+
+pub fn known_factor_u64(factor: u64) -> Option<String> {
+    match factor {
+        0x100000001b3 => Some("FNV/64".to_string()),
         _ => None
     }
 }
