@@ -133,7 +133,7 @@ checksum = "041fbfcf8e7054df725fb9985297e92422cdc80fcf313665f5ca3d761bb63f4c"
 
 [[package]]
 name = "crypti"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytemuck",
